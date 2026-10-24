@@ -6,7 +6,9 @@ services:
     image: cairn-app
     container_name: cairn-server
     ports:
-      - "8000:8000"
+      # Loopback only. The API has no authentication yet.
+      # For remote UI access, use `tailscale serve` or bind to the Tailscale IP.
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./datas/cairn/:/root/.local/share/cairn/
     healthcheck:

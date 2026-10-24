@@ -1,0 +1,145 @@
+# Cairn worker image — native linux/arm64 build for HTB use.
+#
+# Derived from the upstream container/Dockerfile, with:
+#   - native arm64 Kali base, pinned by digest
+#   - arm64 release assets for katana / nuclei / dalfox / cloudfox
+#   - kerbrute compiled from source (no arm64 release upstream)
+#   - system Chromium instead of the Playwright browser
+#   - current Claude Code / Codex / Pi CLIs
+#   - Aliyun + Tencent cloud CLIs and the TSEC flag-submission skill removed
+#
+# Build:
+#   docker build -f container/Dockerfile.arm64 -t cairn-worker:arm64 container/
+
+FROM kalilinux/kali-rolling@sha256:246f464a33c2f22ff2ffea6e46800796a4b1bfbd85748917c46fec4cb84e2d9c
+
+ARG TARGETARCH=arm64
+# Match the host operator's UID/GID so bind-mounted 0600 CLI credentials are
+# readable inside the worker. Override with --build-arg on other machines.
+ARG HOST_UID=1002
+ARG HOST_GID=1002
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# Base Kali toolset. This is big; it is the point of the worker image.
+RUN apt update && \
+    apt -y install kali-linux-headless && \
+    apt clean && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -s /bin/bash kali && \
+    usermod -u "${HOST_UID}" kali && \
+    groupmod -g "${HOST_GID}" kali && \
+    chown -R "${HOST_UID}:${HOST_GID}" /home/kali && \
+    echo "kali ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+USER kali
+
+# HTB-relevant additions. nikto is not published for arm64, so it is omitted.
+RUN sudo apt update && sudo apt -y install --no-install-recommends \
+        bsdextrautils npm jq iputils-ping sshpass ncat rlwrap \
+        bloodyad coercer enum4linux-ng pwncat chisel-common-binaries \
+        dirsearch yq krb5-user gitleaks naabu netexec adb \
+        ffuf gobuster feroxbuster seclists wordlists \
+        python3-impacket ligolo-ng proxychains4 socat tmux \
+        gcc make cmake python3-dev libssl-dev libffi-dev golang-go \
+        default-jre-headless chromium openvpn wireguard-tools \
+        ripgrep fd-find unzip zip tar curl wget git ca-certificates \
+    && sudo apt clean && sudo rm -rf /var/lib/apt/lists/*
+
+# Debian/Kali installs fd as fdfind.
+RUN sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+
+# Kali's apt builds of pwntools/unicorn are Python 3.14 + arm64 ready; pip tries to
+# compile unicorn from source and fails on the current rolling release.
+RUN sudo apt update && sudo apt -y install --no-install-recommends \
+        python3-pwntools python3-pymongo nikto \
+    && sudo apt clean && sudo rm -rf /var/lib/apt/lists/*
+
+# Native arm64 release binaries.
+RUN cd /tmp && \
+    wget -q "https://github.com/projectdiscovery/katana/releases/download/v1.5.0/katana_1.5.0_linux_${TARGETARCH}.zip" -O katana.zip && \
+    wget -q "https://github.com/projectdiscovery/nuclei/releases/download/v3.7.1/nuclei_3.7.1_linux_${TARGETARCH}.zip" -O nuclei.zip && \
+    wget -q "https://github.com/hahwul/dalfox/releases/download/v2.12.0/dalfox-linux-${TARGETARCH}.tar.gz" -O dalfox.tar.gz && \
+    wget -q "https://github.com/BishopFox/cloudfox/releases/download/v2.0.1/cloudfox-linux-${TARGETARCH}.zip" -O cloudfox.zip && \
+    unzip -q katana.zip katana && sudo mv katana /usr/local/bin/ && \
+    unzip -q nuclei.zip nuclei && sudo mv nuclei /usr/local/bin/ && \
+    tar -xzf dalfox.tar.gz && sudo mv "dalfox-linux-${TARGETARCH}" /usr/local/bin/dalfox && \
+    unzip -q cloudfox.zip cloudfox/cloudfox && sudo mv cloudfox/cloudfox /usr/local/bin/ && \
+    sudo rm -rf /tmp/*
+
+# kerbrute has no arm64 release; build the pinned tag from source.
+RUN cd /tmp && \
+    git clone --depth 1 --branch v1.0.3 https://github.com/ropnop/kerbrute.git && \
+    cd kerbrute && \
+    go build -trimpath -o /tmp/kerbrute-bin . && \
+    sudo mv /tmp/kerbrute-bin /usr/local/bin/kerbrute && \
+    sudo chmod +x /usr/local/bin/kerbrute && \
+    cd /tmp && rm -rf kerbrute
+
+# Knowledge bases.
+RUN mkdir -p /home/kali/knowledges && cd /home/kali/knowledges && \
+    git clone --depth=1 https://github.com/swisskyrepo/PayloadsAllTheThings.git && \
+    git clone --depth=1 https://github.com/swisskyrepo/InternalAllTheThings.git && \
+    git clone --depth=1 https://github.com/HackTricks-wiki/hacktricks.git && \
+    git clone --depth=1 https://github.com/HackTricks-wiki/hacktricks-cloud.git
+
+# Tools and PoCs.
+RUN mkdir -p /home/kali/tools && cd /home/kali/tools && \
+    wget -q "https://github.com/frohoff/ysoserial/releases/download/v0.0.6/ysoserial-all.jar" -O ysoserial.jar && \
+    git clone --depth=1 https://github.com/ticarpi/jwt_tool.git && \
+    cd jwt_tool && pip3 install --break-system-packages --no-cache-dir -r requirements.txt && \
+    cd /home/kali/tools && git clone --depth=1 https://github.com/IOActive/jdwp-shellifier.git
+
+RUN mkdir -p /home/kali/pocs && cd /home/kali/pocs && \
+    git clone --depth=1 https://github.com/iSee857/CVE-PoC.git && \
+    git clone --depth=1 https://github.com/zhzyker/exphub.git && \
+    git clone --depth=1 https://github.com/passwa11/2023Hvv_.git && \
+    git clone --depth=1 https://github.com/Threekiii/Awesome-POC.git && \
+    git clone --depth=1 https://github.com/vulhub/vulhub.git
+
+# Nuclei templates, cloned rather than updated at runtime.
+RUN mkdir -p /home/kali/.local && \
+    git clone --depth 1 https://github.com/projectdiscovery/nuclei-templates.git /home/kali/.local/nuclei-templates && \
+    mkdir -p /home/kali/.config/nuclei && \
+    printf '%s\n' 'disable-update-check: true' 'update-template-dir: /home/kali/.local/nuclei-templates' \
+        > /home/kali/.config/nuclei/config.yaml
+
+# Agent CLIs. Keep these aligned with the host versions we tested.
+RUN sudo npm install -g --no-fund --no-audit \
+        --allow-scripts=@anthropic-ai/claude-code,@google/genai,protobufjs \
+        @anthropic-ai/claude-code@2.1.310 \
+        @openai/codex@0.163.0 \
+        @earendil-works/pi-coding-agent@1.3.0 && \
+    cd /usr/local/lib/node_modules/@anthropic-ai/claude-code && \
+    sudo node install.cjs
+
+# Playwright CLI + its own Chromium. The CLI defaults to the "chrome" channel on
+# arm64, which Playwright cannot install there; PLAYWRIGHT_MCP_BROWSER below makes
+# "chromium" the default.
+RUN sudo npm install -g --no-fund --no-audit @playwright/cli@0.1.22 && \
+    cd /tmp && playwright-cli install-browser chromium && \
+    sudo rm -rf /tmp/*
+
+# Upstream image hardening (kept for parity; revisit later).
+RUN sudo rm -rf /usr/lib/llvm-*/build && \
+    sudo chmod o+rx /usr/lib/mysql/plugin/auth_pam_tool_dir /etc/ssl/private
+
+RUN printf '%s\n' 'PS1="${PS1%\\n*} \[\033[0;36m\]\D{%y-%m-%d} - \t\[\033[;32m\]\n${PS1##*\\n}"' >> /home/kali/.bashrc && \
+    mkdir -p /home/kali/workspace /home/kali/.claude /home/kali/.codex \
+             /home/kali/.config/opencode /home/kali/.pi/agent && \
+    cd /home/kali/workspace && git init
+
+ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+ENV PLAYWRIGHT_MCP_BROWSER=chromium
+ENV PYTHONUNBUFFERED=1
+
+# Agent instructions: HTB-focused, TSEC skill removed.
+COPY --chown=kali:kali ./.agents /home/kali/workspace/.agents
+COPY --chown=kali:kali ./.agents /home/kali/workspace/.claude
+COPY --chown=kali:kali ./AGENTS.htb.md /home/kali/workspace/AGENTS.md
+COPY --chown=kali:kali ./AGENTS.htb.md /home/kali/workspace/CLAUDE.md
+RUN rm -rf /home/kali/workspace/.agents/skills/tsec-actions \
+           /home/kali/workspace/.claude/skills/tsec-actions
+
+WORKDIR /home/kali/workspace
