@@ -15,6 +15,8 @@ class ClaudeCodeDriver(SeedSessionDriver):
         return "claude"
 
     def check_health(self, worker: WorkerConfig, *, timeout: float) -> HealthResult:
+        if worker.env.get("CAIRN_HOST_AUTH"):
+            return HealthResult(ok=True, status=None, detail="host CLI auth; health check skipped")
         env = worker.env
         return http_ping(
             f"{env['ANTHROPIC_BASE_URL']}/v1/messages",
@@ -33,6 +35,8 @@ class ClaudeCodeDriver(SeedSessionDriver):
         )
 
     def describe_health(self, worker: WorkerConfig) -> str:
+        if worker.env.get("CAIRN_HOST_AUTH"):
+            return "host CLI auth (health check skipped)"
         return f"POST {worker.env['ANTHROPIC_BASE_URL']}/v1/messages (model={worker.env['ANTHROPIC_MODEL']})"
 
     def build_execute(self, worker: WorkerConfig, prompt: str, session: str | None) -> DriverResult:

@@ -15,6 +15,8 @@ class CodexDriver(RegexSessionDriver):
         return "codex"
 
     def check_health(self, worker: WorkerConfig, *, timeout: float) -> HealthResult:
+        if worker.env.get("CAIRN_HOST_AUTH"):
+            return HealthResult(ok=True, status=None, detail="host CLI auth; health check skipped")
         env = worker.env
         return http_ping(
             f"{env['CODEX_BASE_URL']}/responses",
@@ -32,10 +34,12 @@ class CodexDriver(RegexSessionDriver):
         )
 
     def describe_health(self, worker: WorkerConfig) -> str:
+        if worker.env.get("CAIRN_HOST_AUTH"):
+            return "host CLI auth (health check skipped)"
         return f"POST {worker.env['CODEX_BASE_URL']}/responses (model={worker.env['CODEX_MODEL']})"
 
     def build_execute(self, worker: WorkerConfig, prompt: str, session: str | None) -> DriverResult:
-        if self.local:
+        if self.local or worker.env.get("CAIRN_HOST_AUTH"):
             return DriverResult(
                 argv=[
                     "codex",
@@ -71,7 +75,7 @@ class CodexDriver(RegexSessionDriver):
         )
 
     def build_conclude(self, worker: WorkerConfig, prompt: str, session: str) -> list[str]:
-        if self.local:
+        if self.local or worker.env.get("CAIRN_HOST_AUTH"):
             return [
                 "codex",
                 "exec",

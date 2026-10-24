@@ -19,6 +19,8 @@ class PiDriver(WorkerDriver):
         return "pi"
 
     def check_health(self, worker: WorkerConfig, *, timeout: float) -> HealthResult:
+        if worker.env.get("CAIRN_HOST_AUTH"):
+            return HealthResult(ok=True, status=None, detail="host CLI auth; health check skipped")
         env = worker.env
         base = env["PI_BASE_URL"].rstrip("/")
         model = env["PI_MODEL"]
@@ -51,11 +53,13 @@ class PiDriver(WorkerDriver):
         )
 
     def describe_health(self, worker: WorkerConfig) -> str:
+        if worker.env.get("CAIRN_HOST_AUTH"):
+            return "host CLI auth (health check skipped)"
         env = worker.env
         return f"POST {env['PI_BASE_URL']} (api={env['PI_PROVIDER_API']}, model={env['PI_MODEL']})"
 
     def build_execute(self, worker: WorkerConfig, prompt: str, session: str | None) -> DriverResult:
-        if self.local:
+        if self.local or worker.env.get("CAIRN_HOST_AUTH"):
             return DriverResult(argv=self._local_argv(worker, prompt, session), session=session)
         env = worker.env
         argv = [
@@ -74,7 +78,7 @@ class PiDriver(WorkerDriver):
         return DriverResult(argv=self._wrap_with_models(worker, argv), session=session)
 
     def build_conclude(self, worker: WorkerConfig, prompt: str, session: str) -> list[str]:
-        if self.local:
+        if self.local or worker.env.get("CAIRN_HOST_AUTH"):
             return self._local_argv(worker, prompt, session)
         env = worker.env
         argv = [
