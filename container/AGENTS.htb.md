@@ -44,6 +44,23 @@ logs, loot, compiled exploits, and notes.
 If a tool is missing, install it inside the container or use an equivalent and
 record what you used.
 
+# Work log (required)
+
+Maintain `WORKLOG.md` in the workspace root (container: `/home/kali/workspace/WORKLOG.md`).
+Append entries; never overwrite earlier ones. For every command, tool call, and
+material decision, add:
+
+```markdown
+## <UTC timestamp> <phase> <intent id or ->
+- command:
+- purpose:
+- result / evidence path:
+```
+
+Keep it concise but complete enough that an operator can reconstruct what you did
+without reading the raw transcript. This is the human-facing work log; the raw
+stdout/stderr is captured separately.
+
 # Evidence and reporting
 
 - Save command output, screenshots, hashes, and flags under

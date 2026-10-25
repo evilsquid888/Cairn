@@ -32,6 +32,7 @@ class LocalProcess:
         env: dict[str, str],
         timeout_seconds: int | None = None,
         term_grace_seconds: int = 5,
+        log_path: str | None = None,
     ):
         self.command = command
         self.env = env
@@ -46,8 +47,16 @@ class LocalProcess:
         self._timed_out = False
         self._cancel_reason: str | None = None
         self._kill_lock = threading.Lock()
+        self._log_path = log_path
+        self._log_file = None
+        self._log_lock = threading.RLock()
 
     def start(self) -> None:
+        if self._log_path:
+            try:
+                self._log_file = open(self._log_path, "a", encoding="utf-8", errors="replace")
+            except OSError as exc:
+                LOG.warning("failed to open task log path=%s error=%s", self._log_path, exc)
         self._process = subprocess.Popen(
             self.command,
             cwd=self._cwd,
@@ -82,6 +91,7 @@ class LocalProcess:
             self._stdout_thread.join(timeout=STREAM_JOIN_TIMEOUT_SECONDS)
         if self._stderr_thread is not None:
             self._stderr_thread.join(timeout=STREAM_JOIN_TIMEOUT_SECONDS)
+        self._close_log()
         returncode = self._process.returncode
         if returncode is None:
             returncode = 137 if self._timed_out else 1
@@ -123,13 +133,34 @@ class LocalProcess:
             with suppress(ProcessLookupError, PermissionError, ValueError):
                 process.send_signal(sig)
 
-    @staticmethod
-    def _drain(pipe, sink: list[str]) -> None:
+    def _drain(self, pipe, sink: list[str]) -> None:
         try:
             for chunk in iter(lambda: pipe.read(READ_CHUNK_SIZE), ""):
                 sink.append(chunk)
+                self._append_log(chunk)
         except (ValueError, OSError):
             pass
         finally:
             with suppress(Exception):
                 pipe.close()
+
+    def _append_log(self, text: str) -> None:
+        if not text or self._log_file is None:
+            return
+        try:
+            with self._log_lock:
+                self._log_file.write(text)
+                self._log_file.flush()
+        except (OSError, ValueError) as exc:
+            LOG.warning("failed to write task log path=%s error=%s", self._log_path, exc)
+            self._close_log()
+
+    def _close_log(self) -> None:
+        with self._log_lock:
+            if self._log_file is None:
+                return
+            try:
+                self._log_file.close()
+            except OSError:
+                pass
+            self._log_file = None

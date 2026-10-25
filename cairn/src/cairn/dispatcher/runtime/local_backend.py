@@ -45,6 +45,7 @@ class LocalBackend:
         command: list[str],
         timeout_seconds: int | None = None,
         kill_after_seconds: int = 5,
+        log_path: str | None = None,
     ) -> LocalProcess:
         merged_env = {**os.environ, **(env or {})}
         return LocalProcess(
@@ -53,7 +54,16 @@ class LocalBackend:
             env=merged_env,
             timeout_seconds=timeout_seconds,
             term_grace_seconds=kill_after_seconds,
+            log_path=log_path,
         )
+
+    def read_text_file(self, container_name: str, path: str) -> str | None:
+        target = Path(container_name) / Path(path).name
+        try:
+            text = target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        return text[:1_000_000] if text else None
 
     def write_text_file(self, container_name: str, path: str, content: str) -> None:
         target = Path(path)

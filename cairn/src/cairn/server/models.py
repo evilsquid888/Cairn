@@ -67,6 +67,53 @@ class ProjectDetail(BaseModel):
     hints: list[Hint]
 
 
+RunStatus = Literal["running", "completed", "failed", "timeout", "cancelled"]
+
+
+class Run(BaseModel):
+    id: str
+    project_id: str
+    task_type: str
+    worker: str
+    intent_id: str | None = None
+    status: RunStatus
+    started_at: str
+    finished_at: str | None = None
+    log_path: str | None = None
+    worklog_path: str | None = None
+    error: str | None = None
+
+
+class CreateRunRequest(BaseModel):
+    id: str
+    task_type: str
+    worker: str
+    intent_id: str | None = None
+    status: RunStatus = "running"
+    started_at: str
+    log_path: str | None = None
+
+    @field_validator("id", "task_type", "worker", "started_at")
+    @classmethod
+    def validate_non_empty_text(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("must not be empty")
+        return text
+
+
+class UpdateRunRequest(BaseModel):
+    status: RunStatus | None = None
+    finished_at: str | None = None
+    error: str | None = None
+    worklog_path: str | None = None
+
+
+class ArtifactEntry(BaseModel):
+    path: str
+    size: int
+
+
 class CreateHintInline(BaseModel):
     content: str
     creator: str

@@ -66,6 +66,23 @@ CREATE TABLE IF NOT EXISTS hints (
     PRIMARY KEY (id, project_id)
 );
 
+CREATE TABLE IF NOT EXISTS runs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    task_type TEXT NOT NULL,
+    worker TEXT NOT NULL,
+    intent_id TEXT,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    log_path TEXT,
+    worklog_path TEXT,
+    error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_runs_project_started
+    ON runs(project_id, started_at DESC);
+
 CREATE TABLE IF NOT EXISTS counters (
     name TEXT PRIMARY KEY,
     value INTEGER NOT NULL DEFAULT 0

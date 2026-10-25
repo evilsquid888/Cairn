@@ -207,6 +207,7 @@ class ContainerManager:
         command: list[str],
         timeout_seconds: int | None = None,
         kill_after_seconds: int = 5,
+        log_path: str | None = None,
     ) -> ManagedProcess:
         container = self._require_container(container_name)
         argv: list[str] = []
@@ -220,7 +221,26 @@ class ContainerManager:
                 ]
             )
         argv.extend(command)
-        return ManagedProcess(container, argv, env)
+        return ManagedProcess(container, argv, env, log_path=log_path)
+
+    def read_text_file(self, container_name: str, path: str) -> str | None:
+        """Best-effort read of a text file inside a project container."""
+        container = self._require_container(container_name)
+        try:
+            result = container.exec_run(["cat", path], stdout=True, stderr=False)
+        except DockerException as exc:
+            LOG.warning("failed to read container file container=%s path=%s error=%s", container_name, path, exc)
+            return None
+        if result.exit_code != 0:
+            return None
+        data = result.output
+        if isinstance(data, tuple):
+            data = b"".join(part for part in data if part)
+        if isinstance(data, str):
+            text = data
+        else:
+            text = (data or b"").decode("utf-8", errors="replace")
+        return text[:1_000_000] if text else None
 
     def write_text_file(self, container_name: str, path: str, content: str) -> None:
         archive_path, archive = self._text_file_archive(path, content)

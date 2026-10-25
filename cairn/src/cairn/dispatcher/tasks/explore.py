@@ -113,6 +113,9 @@ def run_explore_task(
             timeout=config.tasks.explore.timeout,
             lease=lease,
             cancellation=cancellation,
+            client=client,
+            project_id=project.project.id,
+            intent_id=intent.id,
         )
         execute_ms = int((time.perf_counter() - execute_started) * 1000)
         session = driver.extract_session(session, first.stdout, first.stderr)
@@ -314,6 +317,9 @@ def _try_conclude_fallback(
         timeout=config.tasks.explore.conclude_timeout,
         lease=lease,
         cancellation=cancellation,
+        client=client,
+        project_id=project_id,
+        intent_id=intent.id,
     )
     conclude_ms = int((time.perf_counter() - conclude_started) * 1000)
     cancelled = cancel_reason(result, cancellation)
@@ -394,6 +400,9 @@ def _run_process(
     timeout: int,
     lease: HeartbeatLease,
     cancellation: TaskCancellation,
+    client: CairnClient,
+    project_id: str,
+    intent_id: str,
 ):
     return run_worker_process(
         container_manager,
@@ -404,4 +413,7 @@ def _run_process(
         timeout_seconds=timeout,
         lease=lease,
         cancellation=cancellation,
+        client=client,
+        project_id=project_id,
+        intent_id=intent_id,
     )
