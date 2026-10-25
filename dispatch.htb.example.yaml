@@ -1,0 +1,134 @@
+# Cairn dispatcher for HTB — native arm64 worker image, host networking.
+#
+#   cp dispatch.htb.example.yaml dispatch.yaml
+#   uv run --project cairn cairn dispatch --config dispatch.yaml
+#
+# Auth is inherited from the host CLIs via bind mounts. No BoxPwnr .env and no
+# API keys in this file. The host `opencode`, `claude`, `pi`, and `codex`
+# logins must already work.
+
+# Use the address the Cairn server is actually bound to. Loopback is the safest
+# default; if the server binds a Tailscale address, use http://100.x.y.z:8000.
+server: "http://127.0.0.1:8000"
+
+runtime:
+  interval: 3
+  # 4 physical cores. Keep this small; HTB scans are CPU-heavy.
+  max_workers: 3
+  max_running_projects: 2
+  max_project_workers: 2
+  healthcheck_timeout: 20
+  # Host-auth workers report healthy without calling an API endpoint.
+  worker_healthcheck: "startup_only"
+  prompt_group: "default"
+
+tasks:
+  bootstrap:
+    timeout: 600
+    conclude_timeout: 120
+  reason:
+    timeout: 120
+    max_intents: 2
+  explore:
+    timeout: 900
+    conclude_timeout: 120
+
+container:
+  image: "cairn-worker:arm64"
+  # Host networking inherits the host's tun0 HTB VPN. Reverse shells work.
+  # For a VPN sidecar instead, use: "container:cairn-vpn"
+  network_mode: "host"
+  completed_action: "stop"
+  cap_add:
+    - "NET_RAW"
+    # nmap's file capabilities and most pivoting tools need NET_ADMIN.
+    - "NET_ADMIN"
+  # SECURITY: these mounts expose host CLI credentials to the worker, which runs
+  # with skip-permissions. Use a disposable host/VM, or switch to API keys.
+  mounts:
+    # OpenCode: host binary plus an `opencode auth export` file. The OpenCode
+    # adapter imports the export into the container-local DB before each run.
+    - "~/.opencode/bin/opencode:/usr/local/bin/opencode:ro"
+    - "~/.config/cairn/opencode-auth.json:/home/kali/.config/opencode/auth-export.json:ro"
+    # Optional: OpenCode plugins from the host.
+    # - "~/.config/opencode/plugins:/home/kali/.config/opencode/plugins:ro"
+
+    # Claude Code — host native binary plus the OAuth login.
+    # (The npm package in the image is a stub; the host binary is the real CLI.)
+    - "~/.local/bin/claude:/usr/local/bin/claude:ro"
+    - "~/.claude.json:/home/kali/.claude.json:ro"
+    - "~/.claude/.credentials.json:/home/kali/.claude/.credentials.json:ro"
+
+    # Pi (host provider/model setup; models.json carries the provider keys).
+    - "~/.pi/agent/models.json:/home/kali/.pi/agent/models.json:ro"
+    - "~/.pi/agent/auth.json:/home/kali/.pi/agent/auth.json:ro"
+    - "~/.pi/agent/settings.json:/home/kali/.pi/agent/settings.json:ro"
+    - "~/.pi/agent/models-store.json:/home/kali/.pi/agent/models-store.json:ro"
+
+    # Codex (host ChatGPT login).
+    - "~/.codex/auth.json:/home/kali/.codex/auth.json:ro"
+    - "~/.codex/config.toml:/home/kali/.codex/config.toml:ro"
+
+# No TSEC / Tencent env.
+common_env: {}
+
+workers:
+  # Priority 0: the OpenCode host setup, pointed at a DeepSeek model.
+  - name: "opencode-deepseek"
+    type: "opencode"
+    task_types: [bootstrap, reason, explore]
+    max_running: 1
+    priority: 0
+    env:
+      CAIRN_HOST_AUTH: "1"
+      OPENCODE_MODEL: "opencode-go/deepseek-v4.1-flash"
+
+  # Priority 1: Claude Code with the host login.
+  - name: "claude-htb"
+    type: "claudecode"
+    task_types: [bootstrap, reason, explore]
+    max_running: 1
+    priority: 1
+    env:
+      CAIRN_HOST_AUTH: "1"
+
+  # Priority 2: Codex with the host ChatGPT login.
+  - name: "codex-htb"
+    type: "codex"
+    task_types: [bootstrap, reason, explore]
+    max_running: 1
+    priority: 2
+    env:
+      CAIRN_HOST_AUTH: "1"
+
+  # Priority 3: Pi with the host provider setup. Its providers point at a
+  # separate model server; keep it last until that server is reachable.
+  - name: "pi-htb"
+    type: "pi"
+    task_types: [bootstrap, reason, explore]
+    max_running: 1
+    priority: 3
+    env:
+      CAIRN_HOST_AUTH: "1"
+
+  # Raw DeepSeek key alternatives. Uncomment one and paste the key.
+  # - name: "deepseek-claude"
+  #   type: "claudecode"
+  #   task_types: [explore]
+  #   max_running: 1
+  #   priority: 4
+  #   env:
+  #     ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic"
+  #     ANTHROPIC_AUTH_TOKEN: "sk-..."
+  #     ANTHROPIC_MODEL: "deepseek-v4-pro"
+
+  # - name: "deepseek-pi"
+  #   type: "pi"
+  #   task_types: [reason]
+  #   max_running: 1
+  #   priority: 4
+  #   env:
+  #     PI_BASE_URL: "https://api.deepseek.com"
+  #     PI_API_KEY: "sk-..."
+  #     PI_MODEL: "deepseek-chat"
+  #     PI_PROVIDER_API: "openai-completions"

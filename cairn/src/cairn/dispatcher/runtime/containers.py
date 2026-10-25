@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import io
 import logging
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 import tarfile
 import threading
 
 import docker
 from docker.errors import APIError, DockerException, NotFound
 from docker.models.containers import Container
+from docker.types import Mount
 
 from cairn.dispatcher.config import ContainerConfig
 from cairn.dispatcher.runtime.process import ManagedProcess
@@ -55,6 +56,7 @@ class ContainerManager:
                 name=name,
                 network_mode=self._config.network_mode,
                 cap_add=self._config.cap_add or None,
+                mounts=self._build_mounts() or None,
             )
             LOG.info("created container project=%s container=%s", project_id, name)
             return name
@@ -70,6 +72,32 @@ class ContainerManager:
             self._start_existing(name)
             return name
         raise RuntimeError(f"failed to create container {name}")
+
+    def _build_mounts(self) -> list[Mount]:
+        mounts: list[Mount] = []
+        for spec in self._config.mounts:
+            host_raw, sep, rest = spec.partition(":")
+            if not sep:
+                LOG.warning("invalid container.mounts entry (expected host:container[:ro|rw]): %s", spec)
+                continue
+            target, _, mode = rest.partition(":")
+            mode = mode or "ro"
+            if not target.startswith("/"):
+                LOG.warning("container.mounts target must be absolute: %s", spec)
+                continue
+            host_path = Path(host_raw).expanduser()
+            if not host_path.exists():
+                LOG.warning("container.mounts source missing: %s", host_path)
+                continue
+            mounts.append(
+                Mount(
+                    target=target,
+                    source=str(host_path.resolve()),
+                    type="bind",
+                    read_only=(mode != "rw"),
+                )
+            )
+        return mounts
 
     def _ensure_running_lock(self, name: str) -> threading.Lock:
         with self._ensure_running_locks_guard:
@@ -179,6 +207,7 @@ class ContainerManager:
         command: list[str],
         timeout_seconds: int | None = None,
         kill_after_seconds: int = 5,
+        log_path: str | None = None,
     ) -> ManagedProcess:
         container = self._require_container(container_name)
         argv: list[str] = []
@@ -192,7 +221,26 @@ class ContainerManager:
                 ]
             )
         argv.extend(command)
-        return ManagedProcess(container, argv, env)
+        return ManagedProcess(container, argv, env, log_path=log_path)
+
+    def read_text_file(self, container_name: str, path: str) -> str | None:
+        """Best-effort read of a text file inside a project container."""
+        container = self._require_container(container_name)
+        try:
+            result = container.exec_run(["cat", path], stdout=True, stderr=False)
+        except DockerException as exc:
+            LOG.warning("failed to read container file container=%s path=%s error=%s", container_name, path, exc)
+            return None
+        if result.exit_code != 0:
+            return None
+        data = result.output
+        if isinstance(data, tuple):
+            data = b"".join(part for part in data if part)
+        if isinstance(data, str):
+            text = data
+        else:
+            text = (data or b"").decode("utf-8", errors="replace")
+        return text[:1_000_000] if text else None
 
     def write_text_file(self, container_name: str, path: str, content: str) -> None:
         archive_path, archive = self._text_file_archive(path, content)

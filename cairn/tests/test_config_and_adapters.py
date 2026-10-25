@@ -46,6 +46,30 @@ def test_dispatch_config_rejects_duplicate_workers_and_excess_project_parallelis
         DispatchConfig.model_validate(payload)
 
 
+def test_host_auth_worker_requires_mounts_and_no_api_keys() -> None:
+    payload = make_config().model_dump()
+    payload["workers"] = [
+        {
+            "name": "claude-host-auth",
+            "type": "claudecode",
+            "task_types": ["explore"],
+            "max_running": 1,
+            "priority": 0,
+            "env": {"CAIRN_HOST_AUTH": "1"},
+        }
+    ]
+    payload["container"]["mounts"] = [
+        "~/.claude/.credentials.json:/home/kali/.claude/.credentials.json:ro"
+    ]
+
+    config = DispatchConfig.model_validate(payload)
+    assert config.workers[0].env["CAIRN_HOST_AUTH"] == "1"
+
+    payload["container"]["mounts"] = []
+    with pytest.raises(ValidationError, match="container.mounts is empty"):
+        DispatchConfig.model_validate(payload)
+
+
 def test_pi_worker_rejects_invalid_context_window() -> None:
     with pytest.raises(ValidationError, match="PI_MODEL_CONTEXT_WINDOW must be greater than 0"):
         WorkerConfig.model_validate(

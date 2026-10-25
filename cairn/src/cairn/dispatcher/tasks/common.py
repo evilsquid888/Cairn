@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 
 from cairn.dispatcher.config import DispatchConfig, WorkerConfig
 from cairn.dispatcher.protocol.client import CairnClient
@@ -11,6 +13,7 @@ from cairn.dispatcher.runtime.cancellation import TaskCancellation
 from cairn.dispatcher.runtime.containers import ContainerManager
 from cairn.dispatcher.runtime.heartbeat import HeartbeatLease
 from cairn.dispatcher.runtime.process import ProcessResult
+from cairn.paths import log_dir
 
 PROCESS_COMMUNICATE_GRACE_SECONDS = 15
 LOG_PREVIEW_LIMIT = 1200
@@ -70,6 +73,67 @@ def write_graph_snapshot_reference(
     )
 
 
+def _utcnow() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _run_status(result: ProcessResult) -> str:
+    if result.cancelled:
+        return "cancelled"
+    if result.timed_out:
+        return "timeout"
+    if result.returncode != 0:
+        return "failed"
+    return "completed"
+
+
+def _finish_run(
+    client: CairnClient | None,
+    run_id: str | None,
+    *,
+    status: str,
+    error: str | None,
+    worklog_path: Path | None,
+) -> None:
+    if client is None or run_id is None:
+        return
+    try:
+        response = client.update_run(
+            run_id,
+            status=status,
+            finished_at=_utcnow(),
+            error=error,
+            worklog_path=str(worklog_path) if worklog_path is not None else None,
+        )
+    except Exception as exc:  # observability must never fail the task
+        LOG.warning("failed to update run run_id=%s error=%s", run_id, exc)
+        return
+    if not response.ok:
+        LOG.warning("failed to update run run_id=%s status=%s", run_id, response.status_code)
+
+
+def _copy_worklog(
+    container_manager: ContainerManager,
+    container_name: str,
+    project_dir: Path,
+) -> Path | None:
+    try:
+        text = container_manager.read_text_file(container_name, "/home/kali/workspace/WORKLOG.md")
+    except Exception as exc:
+        LOG.warning("failed to read worklog container=%s error=%s", container_name, exc)
+        return None
+    if not text:
+        return None
+    target = project_dir / "WORKLOG.md"
+    try:
+        target.write_text(text, encoding="utf-8")
+        os.chmod(target, 0o600)
+    except OSError as exc:
+        LOG.warning("failed to write worklog path=%s error=%s", target, exc)
+        return None
+    return target
+
+
 def run_worker_process(
     container_manager: ContainerManager,
     container_name: str,
@@ -80,19 +144,64 @@ def run_worker_process(
     timeout_seconds: int,
     lease: HeartbeatLease | None = None,
     cancellation: TaskCancellation | None = None,
+    client: CairnClient | None = None,
+    project_id: str | None = None,
+    intent_id: str | None = None,
 ) -> ProcessResult:
+    run_id = "run_" + uuid.uuid4().hex
+    project_dir: Path | None = None
+    log_path: Path | None = None
+    if project_id:
+        try:
+            project_dir = log_dir() / project_id.replace("/", "-")
+            project_dir.mkdir(parents=True, exist_ok=True)
+            os.chmod(project_dir, 0o700)
+            log_path = project_dir / f"{run_id}-{phase}-{worker.name}.log"
+            log_path.write_text(
+                f"=== Cairn run {run_id} ===\n"
+                f"started: {_utcnow()}\n"
+                f"phase: {phase}\n"
+                f"worker: {worker.name}\n"
+                f"intent: {intent_id or '-'}\n"
+                f"timeout: {timeout_seconds}s\n\n",
+                encoding="utf-8",
+            )
+            os.chmod(log_path, 0o600)
+        except OSError as exc:
+            LOG.warning("failed to prepare task log project=%s error=%s", project_id, exc)
+            project_dir = None
+            log_path = None
+
+    if client is not None and project_id:
+        try:
+            response = client.create_run(
+                project_id,
+                run_id,
+                phase,
+                worker.name,
+                intent_id,
+                _utcnow(),
+                str(log_path) if log_path is not None else None,
+            )
+            if not response.ok:
+                LOG.warning("failed to create run project=%s run=%s status=%s", project_id, run_id, response.status_code)
+        except Exception as exc:
+            LOG.warning("failed to create run project=%s run=%s error=%s", project_id, run_id, exc)
+
     LOG.info(
-        "starting container exec container=%s worker=%s phase=%s timeout=%ss",
+        "starting container exec container=%s worker=%s phase=%s timeout=%ss run=%s",
         container_name,
         worker.name,
         phase,
         timeout_seconds,
+        run_id,
     )
     process = container_manager.build_exec_process(
         container_name,
         dict(worker.env),
         argv,
         timeout_seconds=timeout_seconds,
+        log_path=str(log_path) if log_path is not None else None,
     )
     process.start()
     if lease is not None:
@@ -100,12 +209,24 @@ def run_worker_process(
     if cancellation is not None:
         cancellation.attach_process(process)
     try:
-        return process.communicate(timeout=communicate_timeout(timeout_seconds))
+        result = process.communicate(timeout=communicate_timeout(timeout_seconds))
+    except Exception as exc:
+        worklog_path = _copy_worklog(container_manager, container_name, project_dir) if project_dir else None
+        _finish_run(client, run_id, status="failed", error=preview(str(exc)), worklog_path=worklog_path)
+        raise
     finally:
         if lease is not None:
             lease.attach_process(None)
         if cancellation is not None:
             cancellation.attach_process(None)
+
+    worklog_path = _copy_worklog(container_manager, container_name, project_dir) if project_dir else None
+    status = _run_status(result)
+    error = None
+    if status in ("failed", "timeout", "cancelled"):
+        error = preview(cancel_reason(result, cancellation) or result.stderr or result.stdout or f"exit {result.returncode}")
+    _finish_run(client, run_id, status=status, error=error, worklog_path=worklog_path)
+    return result
 
 
 def project_allows_conclude_fallback(client: CairnClient, project_id: str, *, worker_name: str, intent_id: str) -> bool:

@@ -82,6 +82,47 @@ class InProcessClient:
             {"from": from_ids, "description": description, "creator": creator, "worker": None},
         )
 
+    def create_run(
+        self,
+        project_id: str,
+        run_id: str,
+        task_type: str,
+        worker: str,
+        intent_id: str | None,
+        started_at: str,
+        log_path: str | None,
+    ) -> ApiResult:
+        return self._post(
+            f"/projects/{project_id}/runs",
+            {
+                "id": run_id,
+                "task_type": task_type,
+                "worker": worker,
+                "intent_id": intent_id,
+                "status": "running",
+                "started_at": started_at,
+                "log_path": log_path,
+            },
+        )
+
+    def update_run(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        finished_at: str,
+        error: str | None = None,
+        worklog_path: str | None = None,
+    ) -> ApiResult:
+        payload: dict[str, Any] = {"status": status, "finished_at": finished_at}
+        if error is not None:
+            payload["error"] = error
+        if worklog_path is not None:
+            payload["worklog_path"] = worklog_path
+        response = self.http.patch(f"/runs/{run_id}", json=payload)
+        data = response.json() if response.headers.get("content-type", "").startswith("application/json") else None
+        return ApiResult(response.status_code, data, response.text)
+
     def _post(self, path: str, payload: dict[str, Any]) -> ApiResult:
         response = self.http.post(path, json=payload)
         data = response.json() if response.headers.get("content-type", "").startswith("application/json") else None
@@ -89,9 +130,10 @@ class InProcessClient:
 
 
 class LocalProcess:
-    def __init__(self, command: list[str], env: dict[str, str]):
+    def __init__(self, command: list[str], env: dict[str, str], log_path: str | None = None):
         self.command = command
         self.env = env
+        self.log_path = log_path
         self._process: subprocess.Popen[str] | None = None
         self._cancel_reason: str | None = None
         self._lock = threading.Lock()
@@ -156,13 +198,17 @@ class LocalContainerManager:
         command: list[str],
         timeout_seconds: int | None = None,
         kill_after_seconds: int = 5,
+        log_path: str | None = None,
     ) -> LocalProcess:
         assert timeout_seconds is not None
         assert kill_after_seconds == 5
-        return LocalProcess(command, env)
+        return LocalProcess(command, env, log_path=log_path)
 
     def write_text_file(self, container_name: str, path: str, content: str) -> None:
         self.writes.append((container_name, path, content))
+
+    def read_text_file(self, _container_name: str, _path: str) -> str | None:
+        return None
 
     def needs_completed_cleanup(self, _project_id: str) -> bool:
         return False
@@ -177,6 +223,8 @@ class LocalContainerManager:
 @pytest.fixture
 def http_client(tmp_path, monkeypatch) -> TestClient:
     monkeypatch.setattr(db, "_db_path", None)
+    monkeypatch.setenv("CAIRN_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv("CAIRN_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
     db.configure(tmp_path / "cairn.db")
     with TestClient(app) as client:
         yield client

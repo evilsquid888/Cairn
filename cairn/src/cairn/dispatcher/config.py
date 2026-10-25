@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 TaskType = Literal["reason", "explore", "bootstrap"]
-WorkerType = Literal["claudecode", "codex", "pi", "mock"]
+WorkerType = Literal["claudecode", "codex", "opencode", "pi", "mock"]
 CompletedAction = Literal["remove", "stop"]
 WorkerHealthcheckMode = Literal["startup_and_task", "startup_only", "disabled"]
 ExecutionMode = Literal["container", "local"]
@@ -34,6 +34,9 @@ WORKER_ENV_KEYS: dict[WorkerType, tuple[str, ...]] = {
         "PI_API_KEY",
         "PI_PROVIDER_API",
     ),
+    # OpenCode inherits its host config/auth via container.mounts (CAIRN_HOST_AUTH);
+    # it has no required env keys of its own.
+    "opencode": (),
     "mock": (),
 }
 
@@ -155,6 +158,9 @@ class ContainerConfig(BaseModel):
     network_mode: str
     completed_action: CompletedAction
     cap_add: list[str] = Field(default_factory=list)
+    # "host_path:container_path[:ro|rw]" bind mounts. Used to inherit the host CLI
+    # logins (Claude Code / Codex) instead of putting API keys in this file.
+    mounts: list[str] = Field(default_factory=list)
 
 
 class LocalConfig(BaseModel):
@@ -262,7 +268,16 @@ class DispatchConfig(BaseModel):
             if self.container is None:
                 raise ValueError("container config is required when runtime.execution is container")
             for worker in self.workers:
-                required = WORKER_ENV_KEYS[worker.type]
+                # CAIRN_HOST_AUTH means the worker inherits a host CLI's own login via
+                # container.mounts, so the ANTHROPIC_*/CODEX_*/PI_* env keys are not needed.
+                if worker.type in ("claudecode", "codex", "opencode", "pi") and worker.env.get("CAIRN_HOST_AUTH"):
+                    if not self.container.mounts:
+                        raise ValueError(
+                            f"worker {worker.name} uses CAIRN_HOST_AUTH but container.mounts is empty"
+                        )
+                    required: tuple[str, ...] = ()
+                else:
+                    required = WORKER_ENV_KEYS[worker.type]
                 missing = [key for key in required if not worker.env.get(key)]
                 if missing:
                     raise ValueError(f"worker {worker.name} missing env keys: {', '.join(missing)}")

@@ -42,7 +42,13 @@ class ExecProcess(Protocol):
 
 
 class ManagedProcess:
-    def __init__(self, container: Container, command: list[str], env: dict[str, str]):
+    def __init__(
+        self,
+        container: Container,
+        command: list[str],
+        env: dict[str, str],
+        log_path: str | None = None,
+    ):
         self.command = command
         self.env = env
         self._container = container
@@ -56,8 +62,16 @@ class ManagedProcess:
         self._cancel_reason: str | None = None
         self._read_error: str | None = None
         self._done = threading.Event()
+        self._log_path = log_path
+        self._log_file = None
+        self._log_lock = threading.RLock()
 
     def start(self) -> None:
+        if self._log_path:
+            try:
+                self._log_file = open(self._log_path, "a", encoding="utf-8", errors="replace")
+            except OSError as exc:
+                LOG.warning("failed to open task log path=%s error=%s", self._log_path, exc)
         exec_info = self._api.exec_create(
             self._container.id,
             self.command,
@@ -130,14 +144,38 @@ class ManagedProcess:
                 stdout, stderr = self._split_chunk(chunk)
                 if stdout:
                     self._stdout.append(stdout)
+                    self._append_log(stdout)
                 if stderr:
                     self._stderr.append(stderr)
+                    self._append_log(stderr)
         except DockerException as exc:
             self._read_error = str(exc)
         finally:
             self._close_stream(stream)
             self._returncode = self._resolve_exit_code()
+            self._close_log()
             self._done.set()
+
+    def _append_log(self, text: str) -> None:
+        if not text or self._log_file is None:
+            return
+        try:
+            with self._log_lock:
+                self._log_file.write(text)
+                self._log_file.flush()
+        except (OSError, ValueError) as exc:
+            LOG.warning("failed to write task log path=%s error=%s", self._log_path, exc)
+            self._close_log()
+
+    def _close_log(self) -> None:
+        with self._log_lock:
+            if self._log_file is None:
+                return
+            try:
+                self._log_file.close()
+            except OSError:
+                pass
+            self._log_file = None
 
     @staticmethod
     def _close_stream(stream: Any | None) -> None:
