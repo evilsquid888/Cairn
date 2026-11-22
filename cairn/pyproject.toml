@@ -30,6 +30,9 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "adapter_contract: live CLI format-drift checks (not in the default run; use scripts/verify-adapters or `pytest tests_live/`)",
+]
 
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple"
