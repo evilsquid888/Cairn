@@ -137,20 +137,21 @@ class CairnClient:
         intent_id: str | None,
         started_at: str,
         log_path: str | None,
+        *,
+        transcript_path: str | None = None,
     ) -> ApiResult:
-        return self._request_json(
-            "POST",
-            f"/projects/{project_id}/runs",
-            json={
-                "id": run_id,
-                "task_type": task_type,
-                "worker": worker,
-                "intent_id": intent_id,
-                "status": "running",
-                "started_at": started_at,
-                "log_path": log_path,
-            },
-        )
+        payload: dict[str, Any] = {
+            "id": run_id,
+            "task_type": task_type,
+            "worker": worker,
+            "intent_id": intent_id,
+            "status": "running",
+            "started_at": started_at,
+            "log_path": log_path,
+        }
+        if transcript_path is not None:
+            payload["transcript_path"] = transcript_path
+        return self._request_json("POST", f"/projects/{project_id}/runs", json=payload)
 
     def update_run(
         self,
@@ -160,6 +161,7 @@ class CairnClient:
         finished_at: str,
         error: str | None = None,
         worklog_path: str | None = None,
+        transcript_path: str | None = None,
     ) -> ApiResult:
         payload: dict[str, Any] = {
             "status": status,
@@ -169,6 +171,8 @@ class CairnClient:
             payload["error"] = error
         if worklog_path is not None:
             payload["worklog_path"] = worklog_path
+        if transcript_path is not None:
+            payload["transcript_path"] = transcript_path
         return self._request_json("PATCH", f"/runs/{run_id}", json=payload)
 
     def _request_json(self, method: str, path: str, json: dict[str, Any]) -> ApiResult:

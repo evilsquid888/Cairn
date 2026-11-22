@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -16,6 +17,7 @@ from cairn.dispatcher.runtime.cancellation import TaskCancellation
 from cairn.dispatcher.workers.adapters.codex import CodexDriver
 from cairn.dispatcher.workers.adapters.pi import PiDriver
 from cairn.dispatcher.workers.registry import get_driver
+from cairn.dispatcher.workers.transcript import TranscriptEvent, TranscriptParser
 
 from conftest import FakeClient, make_config, make_intent, make_project
 
@@ -39,6 +41,107 @@ def test_local_process_captures_stdout_and_exit_code() -> None:
     assert result.stdout.strip() == "hello"
     assert result.returncode == 3
     assert not result.timed_out
+
+
+class _LineParser(TranscriptParser):
+    def feed(self, line):
+        return [TranscriptEvent(kind="assistant_text", text=line)] if line.strip() else []
+
+
+class _BoomParser(TranscriptParser):
+    def feed(self, line):
+        raise RuntimeError("boom")
+
+    def finish(self):
+        raise RuntimeError("boom finish")
+
+
+def test_local_process_writes_transcript(tmp_path: Path) -> None:
+    tpath = tmp_path / "run-transcript.jsonl"
+    process = LocalProcess(
+        ["sh", "-c", "printf '{\"t\":\"a\"}\\n{\"t\":\"b\"}\\n'; echo err >&2"],
+        cwd=os.getcwd(),
+        env=dict(os.environ),
+        timeout_seconds=10,
+        transcript_path=str(tpath),
+        transcript_parser=_LineParser(),
+    )
+    process.start()
+    result = process.communicate(timeout=20)
+
+    assert result.returncode == 0
+    records = [json.loads(line) for line in tpath.read_text().splitlines()]
+    assert [r["seq"] for r in records] == [0, 1]
+    assert all(isinstance(r["ts"], str) for r in records)
+    assert [r["text"] for r in records] == ['{"t":"a"}', '{"t":"b"}']
+    assert all(r["kind"] == "assistant_text" for r in records)
+
+
+def test_transcript_line_split_across_chunks(tmp_path: Path) -> None:
+    tpath = tmp_path / "t.jsonl"
+    process = LocalProcess(
+        ["true"],
+        cwd=os.getcwd(),
+        env=dict(os.environ),
+        transcript_path=str(tpath),
+        transcript_parser=_LineParser(),
+    )
+    process._open_transcript()
+    process._feed_transcript('{"t":')
+    process._feed_transcript('"a"}\n{"t"')
+    process._feed_transcript(':"b"}')
+    process._close_transcript()
+
+    records = [json.loads(line) for line in tpath.read_text().splitlines()]
+    assert [r["text"] for r in records] == ['{"t":"a"}', '{"t":"b"}']
+    assert [r["seq"] for r in records] == [0, 1]
+
+
+def test_transcript_parser_error_does_not_crash(tmp_path: Path) -> None:
+    process = LocalProcess(
+        ["sh", "-c", "echo hi; exit 2"],
+        cwd=os.getcwd(),
+        env=dict(os.environ),
+        timeout_seconds=10,
+        transcript_path=str(tmp_path / "t.jsonl"),
+        transcript_parser=_BoomParser(),
+    )
+    process.start()
+    result = process.communicate(timeout=20)
+
+    assert result.returncode == 2
+    assert result.stdout.strip() == "hi"
+
+
+def _raising_gen():
+    yield TranscriptEvent(kind="assistant_text", text="ok")
+    raise RuntimeError("lazy boom")
+
+
+class _LazyBadParser(TranscriptParser):
+    def feed(self, line):
+        return _raising_gen()
+
+    def finish(self):
+        return 42  # non-iterable
+
+
+@pytest.mark.parametrize("command", ["printf 'a\\nb'; exit 3", "printf 'a\\nb\\n'; exit 3"])
+def test_transcript_close_never_raises_on_bad_parser_output(tmp_path: Path, command: str) -> None:
+    process = LocalProcess(
+        ["sh", "-c", command],
+        cwd=os.getcwd(),
+        env=dict(os.environ),
+        timeout_seconds=10,
+        transcript_path=str(tmp_path / "t.jsonl"),
+        transcript_parser=_LazyBadParser(),
+    )
+    process.start()
+    result = process.communicate(timeout=20)
+
+    assert result.returncode == 3
+    assert result.stdout.startswith("a\nb")
+    assert process._transcript_file is None
 
 
 def test_local_process_inherits_cwd(tmp_path: Path) -> None:
@@ -320,7 +423,7 @@ def test_codex_local_driver_omits_provider_injection() -> None:
     worker = _bare_worker("codex")
     argv = CodexDriver(local=True).build_execute(worker, "PROMPT", None).argv
 
-    assert argv == ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--", "PROMPT"]
+    assert argv == ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "--", "PROMPT"]
     assert not any("model_providers" in part for part in argv)
     assert "--model" not in argv
 

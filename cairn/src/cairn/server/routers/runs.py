@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from cairn.paths import artifacts_dir, log_dir
 from cairn.server.db import get_conn
@@ -17,6 +18,8 @@ router = APIRouter(tags=["runs"])
 TAIL_MAX_LINES = 10_000
 WORKLOG_MAX_BYTES = 1_000_000
 ARTIFACT_LIMIT = 500
+TRANSCRIPT_MAX_LINES = 200_000
+TRANSCRIPT_MAX_EVENTS = 10_000
 
 
 def _run_from_row(row: sqlite3.Row) -> Run:
@@ -80,8 +83,8 @@ def create_run(project_id: str, body: CreateRunRequest):
                 """
                 INSERT INTO runs (
                     id, project_id, task_type, worker, intent_id, status,
-                    started_at, log_path
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    started_at, log_path, transcript_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     body.id,
@@ -92,6 +95,7 @@ def create_run(project_id: str, body: CreateRunRequest):
                     body.status,
                     body.started_at,
                     body.log_path,
+                    body.transcript_path,
                 ),
             )
         except sqlite3.IntegrityError as exc:
@@ -152,6 +156,56 @@ def get_run_worklog(run_id: str):
         _read_text(path, WORKLOG_MAX_BYTES),
         headers={"X-Content-Type-Options": "nosniff"},
     )
+
+
+def _reject_json_constant(value: str):
+    # NaN/Infinity parse fine but cannot be serialized by JSONResponse.
+    raise ValueError(value)
+
+
+def _read_transcript_events(path: Path, after_seq: int, limit: int) -> list[dict]:
+    events: list[dict] = []
+    with path.open("rb") as handle:
+        for index, raw in enumerate(handle):
+            if index >= TRANSCRIPT_MAX_LINES or len(events) >= limit:
+                break
+            if index <= after_seq:
+                continue
+            try:
+                event = json.loads(
+                    raw.decode("utf-8", errors="replace"),
+                    parse_constant=_reject_json_constant,
+                )
+            except (ValueError, RecursionError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            event["seq"] = index
+            events.append(event)
+    return events
+
+
+@router.get("/runs/{run_id}/transcript")
+def get_run_transcript(
+    run_id: str,
+    after_seq: int = Query(default=-1),
+    limit: int = Query(default=2000, ge=1, le=TRANSCRIPT_MAX_EVENTS),
+):
+    with get_conn() as conn:
+        row = _get_run_or_404(conn, run_id)
+    if not row["transcript_path"]:
+        events: list[dict] = []
+    else:
+        try:
+            path = _safe_file(row["transcript_path"], log_dir())
+        except HTTPException as exc:
+            # Out-of-root stays 403; an absent/unreadable in-root file is just empty.
+            if exc.status_code != 404:
+                raise
+            events = []
+        else:
+            events = _read_transcript_events(path, after_seq, limit)
+    return JSONResponse(events, headers={"X-Content-Type-Options": "nosniff"})
 
 
 @router.get("/projects/{project_id}/artifacts", response_model=list[ArtifactEntry])

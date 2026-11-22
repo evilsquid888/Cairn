@@ -199,6 +199,8 @@ class LocalContainerManager:
         timeout_seconds: int | None = None,
         kill_after_seconds: int = 5,
         log_path: str | None = None,
+        transcript_path: str | None = None,
+        transcript_parser: object = None,
     ) -> LocalProcess:
         assert timeout_seconds is not None
         assert kill_after_seconds == 5

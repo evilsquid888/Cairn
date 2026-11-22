@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from cairn.dispatcher.config import WorkerConfig
 from cairn.dispatcher.workers.health import HealthResult
+from cairn.dispatcher.workers.transcript import TranscriptParser
 
 
 @dataclass(slots=True)
@@ -52,6 +53,10 @@ class WorkerDriver(abc.ABC):
 
     def extract_response_text(self, stdout: str, stderr: str) -> str:
         return stdout
+
+    def new_transcript_parser(self) -> TranscriptParser | None:
+        """Parser turning this worker's stdout into transcript events; None means no transcript."""
+        return None
 
 
 class SeedSessionDriver(WorkerDriver):

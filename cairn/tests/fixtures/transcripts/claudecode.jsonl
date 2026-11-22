@@ -1,0 +1,6 @@
+{"type": "system", "subtype": "init", "cwd": "/workspace", "session_id": "sess_fixture", "tools": ["Bash", "Read"], "mcp_servers": [], "model": "claude-opus-4"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_fixture1", "name": "Bash", "input": {"command": "echo hello-fixture"}}]}, "session_id": "sess_fixture"}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_fixture1", "content": "hello-fixture", "is_error": false}]}, "session_id": "sess_fixture"}
+{"type": "assistant", "message": {"model": "claude-opus-4", "id": "msg_fixture1", "type": "message", "role": "assistant", "content": [{"type": "text", "text": "hi"}], "stop_reason": null, "usage": {"input_tokens": 2, "output_tokens": 1}}, "parent_tool_use_id": null, "session_id": "sess_fixture"}
+{"type": "rate_limit_event", "rate_limit_info": {"status": "allowed"}, "session_id": "sess_fixture"}
+{"type": "result", "subtype": "success", "is_error": false, "duration_ms": 1000, "num_turns": 1, "result": "hi", "stop_reason": "end_turn", "session_id": "sess_fixture", "total_cost_usd": 0.01, "usage": {"input_tokens": 2, "cache_creation_input_tokens": 100, "cache_read_input_tokens": 200, "output_tokens": 4}}

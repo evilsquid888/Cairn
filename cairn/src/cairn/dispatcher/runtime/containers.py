@@ -5,6 +5,7 @@ import logging
 from pathlib import Path, PurePosixPath
 import tarfile
 import threading
+from typing import Any
 
 import docker
 from docker.errors import APIError, DockerException, NotFound
@@ -208,6 +209,8 @@ class ContainerManager:
         timeout_seconds: int | None = None,
         kill_after_seconds: int = 5,
         log_path: str | None = None,
+        transcript_path: str | None = None,
+        transcript_parser: Any = None,
     ) -> ManagedProcess:
         container = self._require_container(container_name)
         argv: list[str] = []
@@ -221,7 +224,14 @@ class ContainerManager:
                 ]
             )
         argv.extend(command)
-        return ManagedProcess(container, argv, env, log_path=log_path)
+        return ManagedProcess(
+            container,
+            argv,
+            env,
+            log_path=log_path,
+            transcript_path=transcript_path,
+            transcript_parser=transcript_parser,
+        )
 
     def read_text_file(self, container_name: str, path: str) -> str | None:
         """Best-effort read of a text file inside a project container."""

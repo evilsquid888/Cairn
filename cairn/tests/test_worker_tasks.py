@@ -251,3 +251,63 @@ def test_reason_startup_only_mode_skips_task_healthcheck(monkeypatch) -> None:
 
     assert outcome == "success"
     assert client.created_intents == [("proj_001", ["f001"], "next", "test-worker")]
+
+
+def test_run_worker_process_records_transcript(monkeypatch, tmp_path) -> None:
+    import json
+    import os
+
+    from cairn.dispatcher.config import WorkerConfig
+    from cairn.dispatcher.runtime.local_process import LocalProcess
+    from cairn.dispatcher.tasks.common import run_worker_process
+    from cairn.dispatcher.workers.transcript import TranscriptEvent, TranscriptParser
+
+    monkeypatch.setenv("CAIRN_LOG_DIR", str(tmp_path))
+
+    class LineParser(TranscriptParser):
+        def feed(self, line):
+            return [TranscriptEvent(kind="assistant_text", text=line.strip())] if line.strip() else []
+
+    class StubDriver:
+        def new_transcript_parser(self):
+            return LineParser()
+
+    class LocalManager:
+        def build_exec_process(self, _name, env, command, *, timeout_seconds, log_path=None,
+                               transcript_path=None, transcript_parser=None, **_kw):
+            return LocalProcess(
+                command, cwd=os.getcwd(), env=dict(os.environ), timeout_seconds=timeout_seconds,
+                log_path=log_path, transcript_path=transcript_path, transcript_parser=transcript_parser,
+            )
+
+        def read_text_file(self, *_a, **_k):
+            return ""
+
+    class RunClient:
+        def __init__(self):
+            self.created = []
+            self.updated = []
+
+        def create_run(self, *args, **kwargs):
+            self.created.append((args, kwargs))
+            return ApiResult(200, {})
+
+        def update_run(self, run_id, **kwargs):
+            self.updated.append((run_id, kwargs))
+            return ApiResult(200, {})
+
+    client = RunClient()
+    worker = WorkerConfig(name="w1", type="mock", task_types=["explore"], max_running=1, priority=0)
+    result = run_worker_process(
+        LocalManager(), "c", worker, ["sh", "-c", "printf '{\"a\":1}\\n{\"b\":2}\\n'"],
+        phase="explore_execute", timeout_seconds=10, client=client, project_id="p1",
+        intent_id="i1", driver=StubDriver(),
+    )
+
+    assert result.returncode == 0
+    created_path = client.created[0][1]["transcript_path"]
+    assert created_path is not None
+    records = [json.loads(line) for line in open(created_path).read().splitlines()]
+    assert [r["text"] for r in records] == ['{"a":1}', '{"b":2}']
+    assert all("seq" in r and "ts" in r for r in records)
+    assert client.updated[0][1]["transcript_path"] == created_path

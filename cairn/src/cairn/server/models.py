@@ -81,6 +81,7 @@ class Run(BaseModel):
     finished_at: str | None = None
     log_path: str | None = None
     worklog_path: str | None = None
+    transcript_path: str | None = None
     error: str | None = None
 
 
@@ -92,6 +93,7 @@ class CreateRunRequest(BaseModel):
     status: RunStatus = "running"
     started_at: str
     log_path: str | None = None
+    transcript_path: str | None = None
 
     @field_validator("id", "task_type", "worker", "started_at")
     @classmethod
@@ -107,6 +109,7 @@ class UpdateRunRequest(BaseModel):
     finished_at: str | None = None
     error: str | None = None
     worklog_path: str | None = None
+    transcript_path: str | None = None
 
 
 class ArtifactEntry(BaseModel):

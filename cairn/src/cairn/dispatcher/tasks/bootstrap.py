@@ -110,6 +110,7 @@ def run_bootstrap_task(
             client=client,
             project_id=project.project.id,
             intent_id=intent.id,
+            driver=driver,
         )
         execute_ms = int((time.perf_counter() - execute_started) * 1000)
         session = driver.extract_session(session, first.stdout, first.stderr)
@@ -308,6 +309,7 @@ def _try_conclude_fallback(
         client=client,
         project_id=project.project.id,
         intent_id=intent.id,
+        driver=driver,
     )
     conclude_ms = int((time.perf_counter() - conclude_started) * 1000)
     cancelled = cancel_reason(result, cancellation)

@@ -1129,10 +1129,6 @@
       </label>
       <input x-model="workSearch" placeholder="Filter lines…"
         class="flex-1 min-w-48 max-w-sm px-2.5 py-1 border border-slate-200 rounded-lg text-[11px] focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-400">
-      <label class="flex items-center gap-1.5 cursor-pointer">
-        <input type="checkbox" x-model="workRedact" class="h-3.5 w-3.5 rounded border-slate-300 text-brand-500 focus:ring-brand-200">
-        <span>Redact secrets</span>
-      </label>
     </div>
 
     <div class="px-5 py-2 bg-amber-50/70 border-b border-amber-100 text-[11px] text-amber-700 shrink-0">
@@ -1143,7 +1139,44 @@
     <div class="flex-1 min-h-0 p-4 bg-slate-50">
       <div x-show="workTab === 'transcript' || workTab === 'commands'" x-ref="workLogScroll"
         class="h-full overflow-auto rounded-xl bg-slate-950 p-4 text-slate-100">
-        <pre class="text-[11px] leading-relaxed whitespace-pre-wrap break-words font-mono" x-text="workLogView() || 'No output yet. The task may not have started, or the transcript is empty.'"></pre>
+        <div x-show="workTranscriptView().length === 0" class="text-[11px] font-mono text-slate-400">No output yet. The task may not have started, or the transcript is empty.</div>
+        <div class="space-y-2 text-[12px] leading-relaxed">
+          <template x-for="ev in workTranscriptView()" :key="ev.seq">
+            <div>
+              <template x-if="ev.kind === 'assistant_text'">
+                <p class="whitespace-pre-wrap break-words text-slate-100" x-text="ev.text"></p>
+              </template>
+              <template x-if="ev.kind === 'thinking'">
+                <p class="whitespace-pre-wrap break-words text-slate-400 italic" x-text="ev.text"></p>
+              </template>
+              <template x-if="ev.kind === 'tool_call'">
+                <div class="rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 font-mono text-[11px]">
+                  <div class="text-brand-400 font-semibold" x-text="'$ ' + (ev.tool || ev.title || 'tool')"></div>
+                  <pre class="whitespace-pre-wrap break-words text-slate-200 mt-1" x-text="ev.text"></pre>
+                </div>
+              </template>
+              <template x-if="ev.kind === 'tool_result'">
+                <details class="rounded-lg border px-3 py-1.5 font-mono text-[11px]"
+                  :class="(ev.meta && ev.meta.is_error) ? 'border-rose-800 bg-rose-950/40 text-rose-200' : 'border-slate-800 bg-slate-900/60 text-slate-300'">
+                  <summary class="cursor-pointer select-none text-slate-400" x-text="toolResultHeader(ev)"></summary>
+                  <pre class="whitespace-pre-wrap break-words mt-1" x-text="ev.text"></pre>
+                </details>
+              </template>
+              <template x-if="ev.kind === 'usage' || ev.kind === 'result'">
+                <div class="text-[10px] font-mono text-slate-500 border-t border-slate-800 pt-1" x-text="usageLine(ev)"></div>
+              </template>
+              <template x-if="ev.kind === 'system'">
+                <div class="text-[10px] text-slate-500" x-text="ev.title || ev.text"></div>
+              </template>
+              <template x-if="ev.kind === 'error'">
+                <div class="text-rose-400 whitespace-pre-wrap break-words" x-text="ev.text || ev.title"></div>
+              </template>
+              <template x-if="!['assistant_text','thinking','tool_call','tool_result','usage','result','system','error'].includes(ev.kind)">
+                <pre class="font-mono text-[11px] text-slate-400 whitespace-pre-wrap break-words" x-text="ev.text"></pre>
+              </template>
+            </div>
+          </template>
+        </div>
       </div>
       <div x-show="workTab === 'worklog'" class="h-full overflow-auto rounded-xl bg-white border border-slate-200 p-4">
         <pre class="text-[12px] leading-relaxed whitespace-pre-wrap break-words font-mono text-slate-700" x-text="workWorklog || 'No worklog recorded for this run. The agent may not have written WORKLOG.md yet.'"></pre>
@@ -1255,11 +1288,11 @@ function cairnApp() {
     runsLoading: false,
     workRun: null,
     workTab: 'transcript',
-    workLog: '',
+    workTranscript: [],
+    workTranscriptSeq: -1,
     workWorklog: '',
     workArtifacts: [],
     workSearch: '',
-    workRedact: false,
     workFollow: true,
     workPollTimer: null,
     workLoading: false,
@@ -1815,9 +1848,9 @@ function cairnApp() {
       this.showWorkModal = true;
       this.workTab = 'transcript';
       this.workSearch = '';
-      this.workRedact = false;
       this.workFollow = true;
-      this.workLog = '';
+      this.workTranscript = [];
+      this.workTranscriptSeq = -1;
       this.workWorklog = '';
       this.workArtifacts = [];
       this.workError = '';
@@ -1829,7 +1862,8 @@ function cairnApp() {
       this.showWorkModal = false;
       this.stopWorkPolling();
       this.workRun = null;
-      this.workLog = '';
+      this.workTranscript = [];
+      this.workTranscriptSeq = -1;
       this.workWorklog = '';
       this.workArtifacts = [];
       this.workError = '';
@@ -1859,12 +1893,17 @@ function cairnApp() {
     async refreshWork() {
       if (!this.showWorkModal || !this.workRun || this.workLoading) return;
       this.workLoading = true;
+      const rid = this.workRun.id;
       try {
-        this.workRun = await this.api('GET', `/runs/${this.workRun.id}`);
+        const fresh = await this.api('GET', `/runs/${rid}`);
+        if (this.workRun?.id !== rid) return;
+        this.workRun = fresh;
         if (this.workTab === 'worklog') {
           if (this.workRun.worklog_path) {
             try {
-              this.workWorklog = await this.fetchText(`/runs/${this.workRun.id}/worklog`);
+              const wl = await this.fetchText(`/runs/${rid}/worklog`);
+              if (this.workRun?.id !== rid) return;
+              this.workWorklog = wl;
             } catch (e) {
               this.workWorklog = '';
             }
@@ -1873,9 +1912,14 @@ function cairnApp() {
           }
         } else if (this.workTab === 'transcript' || this.workTab === 'commands') {
           try {
-            this.workLog = await this.fetchText(`/runs/${this.workRun.id}/log?tail=5000`);
+            const raw = await this.fetchText(`/runs/${rid}/transcript?after_seq=${this.workTranscriptSeq}`);
+            if (this.workRun?.id !== rid) return;
+            const evs = JSON.parse(raw);
+            if (Array.isArray(evs) && evs.length) {
+              this.workTranscript = this.workTranscript.concat(evs);
+              this.workTranscriptSeq = evs[evs.length - 1].seq;
+            }
           } catch (e) {
-            this.workLog = '';
             this.workError = e.message;
           }
         }
@@ -1918,29 +1962,47 @@ function cairnApp() {
       return String(text || '').replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '');
     },
 
-    redactSecrets(text) {
-      return String(text || '')
-        .replace(/flag\{[^}]*\}/gi, '[REDACTED FLAG]')
-        .replace(/\b[a-f0-9]{32}\b/gi, '[REDACTED 32-HEX]')
-        .replace(/sk-[A-Za-z0-9_-]{8,}/g, '[REDACTED KEY]')
-        .replace(/((?:password|passwd|token|secret|api[_-]?key)\s*[:=]\s*)\S+/gi, '$1[REDACTED]');
+    workTranscriptView() {
+      let evs = this.workTranscript;
+      if (this.workTab === 'commands') evs = evs.filter(e => e.kind === 'tool_call' || e.kind === 'tool_result');
+      const q = this.workSearch.trim().toLowerCase();
+      if (q) evs = evs.filter(e => `${e.tool || ''} ${e.title || ''} ${e.text || ''}`.toLowerCase().includes(q));
+      return evs;
     },
 
-    workLogView() {
-      let text = this.stripAnsi(this.workLog || '');
-      if (this.workTab === 'commands') {
-        text = text.split('\n').filter(line => /spawning process|\bcommand=|^\s*\$ |\bargs=/.test(line)).join('\n');
-      }
-      const query = this.workSearch.trim().toLowerCase();
-      if (query) {
-        text = text.split('\n').filter(line => line.toLowerCase().includes(query)).join('\n');
-      }
-      if (this.workRedact) text = this.redactSecrets(text);
-      return text;
+    toolResultHeader(ev) {
+      const m = ev.meta || {};
+      const parts = ['result'];
+      if (m.exit_code !== undefined && m.exit_code !== null) parts.push(`exit ${m.exit_code}`);
+      if (m.is_error) parts.push('error');
+      return parts.join(' · ');
+    },
+
+    usageLine(ev) {
+      const m = ev.meta || {};
+      const u = m.usage || m;
+      const parts = [ev.kind];
+      const inp = u.input_tokens ?? m.input_tokens;
+      const out = u.output_tokens ?? m.output_tokens;
+      if (inp !== undefined) parts.push(`in ${inp}`);
+      if (out !== undefined) parts.push(`out ${out}`);
+      if (m.total_cost_usd !== undefined && m.total_cost_usd !== null) parts.push(`$${Number(m.total_cost_usd).toFixed(4)}`);
+      if (parts.length === 1 && ev.text) parts.push(ev.text);
+      return parts.join(' · ');
+    },
+
+    transcriptText() {
+      return this.workTranscriptView().map(ev => {
+        if (ev.kind === 'tool_call') return `$ ${ev.tool || ''}\n${ev.text || ''}`;
+        if (ev.kind === 'tool_result') return `[${this.toolResultHeader(ev)}]\n${ev.text || ''}`;
+        if (ev.kind === 'usage' || ev.kind === 'result') return this.usageLine(ev);
+        if (ev.kind === 'system') return ev.title || ev.text || '';
+        return ev.text || '';
+      }).join('\n\n');
     },
 
     workDisplayText() {
-      return this.workTab === 'worklog' ? (this.workWorklog || '') : this.workLogView();
+      return this.workTab === 'worklog' ? (this.workWorklog || '') : this.transcriptText();
     },
 
     async copyWork() {
@@ -1952,8 +2014,11 @@ function cairnApp() {
       }
     },
 
-    downloadWork() {
-      const text = this.workDisplayText();
+    async downloadWork() {
+      let text = this.workDisplayText();
+      if (this.workTab !== 'worklog' && this.workRun) {
+        try { text = await this.fetchText(`/runs/${this.workRun.id}/log?tail=10000`); } catch (e) { this.workError = e.message; return; }
+      }
       const blob = new Blob([text], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');

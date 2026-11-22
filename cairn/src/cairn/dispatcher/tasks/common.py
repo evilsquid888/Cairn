@@ -6,6 +6,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from cairn.dispatcher.config import DispatchConfig, WorkerConfig
 from cairn.dispatcher.protocol.client import CairnClient
@@ -14,6 +15,9 @@ from cairn.dispatcher.runtime.containers import ContainerManager
 from cairn.dispatcher.runtime.heartbeat import HeartbeatLease
 from cairn.dispatcher.runtime.process import ProcessResult
 from cairn.paths import log_dir
+
+if TYPE_CHECKING:
+    from cairn.dispatcher.workers.base import WorkerDriver
 
 PROCESS_COMMUNICATE_GRACE_SECONDS = 15
 LOG_PREVIEW_LIMIT = 1200
@@ -94,6 +98,7 @@ def _finish_run(
     status: str,
     error: str | None,
     worklog_path: Path | None,
+    transcript_path: Path | None = None,
 ) -> None:
     if client is None or run_id is None:
         return
@@ -104,6 +109,7 @@ def _finish_run(
             finished_at=_utcnow(),
             error=error,
             worklog_path=str(worklog_path) if worklog_path is not None else None,
+            transcript_path=str(transcript_path) if transcript_path is not None else None,
         )
     except Exception as exc:  # observability must never fail the task
         LOG.warning("failed to update run run_id=%s error=%s", run_id, exc)
@@ -147,10 +153,12 @@ def run_worker_process(
     client: CairnClient | None = None,
     project_id: str | None = None,
     intent_id: str | None = None,
+    driver: "WorkerDriver | None" = None,
 ) -> ProcessResult:
     run_id = "run_" + uuid.uuid4().hex
     project_dir: Path | None = None
     log_path: Path | None = None
+    transcript_path: Path | None = None
     if project_id:
         try:
             project_dir = log_dir() / project_id.replace("/", "-")
@@ -167,10 +175,22 @@ def run_worker_process(
                 encoding="utf-8",
             )
             os.chmod(log_path, 0o600)
+            transcript_path = project_dir / f"{run_id}-{phase}-{worker.name}-transcript.jsonl"
         except OSError as exc:
             LOG.warning("failed to prepare task log project=%s error=%s", project_id, exc)
             project_dir = None
             log_path = None
+            transcript_path = None
+
+    parser = None
+    if driver is not None:
+        try:
+            parser = driver.new_transcript_parser()
+        except Exception as exc:  # transcripts must never fail the run
+            LOG.warning("failed to create transcript parser worker=%s error=%s", worker.name, exc)
+            parser = None
+    if parser is None:
+        transcript_path = None
 
     if client is not None and project_id:
         try:
@@ -182,6 +202,7 @@ def run_worker_process(
                 intent_id,
                 _utcnow(),
                 str(log_path) if log_path is not None else None,
+                transcript_path=str(transcript_path) if transcript_path is not None else None,
             )
             if not response.ok:
                 LOG.warning("failed to create run project=%s run=%s status=%s", project_id, run_id, response.status_code)
@@ -202,6 +223,8 @@ def run_worker_process(
         argv,
         timeout_seconds=timeout_seconds,
         log_path=str(log_path) if log_path is not None else None,
+        transcript_path=str(transcript_path) if transcript_path is not None else None,
+        transcript_parser=parser,
     )
     process.start()
     if lease is not None:
@@ -212,7 +235,8 @@ def run_worker_process(
         result = process.communicate(timeout=communicate_timeout(timeout_seconds))
     except Exception as exc:
         worklog_path = _copy_worklog(container_manager, container_name, project_dir) if project_dir else None
-        _finish_run(client, run_id, status="failed", error=preview(str(exc)), worklog_path=worklog_path)
+        _finish_run(client, run_id, status="failed", error=preview(str(exc)), worklog_path=worklog_path,
+                    transcript_path=transcript_path)
         raise
     finally:
         if lease is not None:
@@ -225,7 +249,7 @@ def run_worker_process(
     error = None
     if status in ("failed", "timeout", "cancelled"):
         error = preview(cancel_reason(result, cancellation) or result.stderr or result.stdout or f"exit {result.returncode}")
-    _finish_run(client, run_id, status=status, error=error, worklog_path=worklog_path)
+    _finish_run(client, run_id, status=status, error=error, worklog_path=worklog_path, transcript_path=transcript_path)
     return result
 
 

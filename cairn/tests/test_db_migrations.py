@@ -68,3 +68,29 @@ def test_configure_maps_disabled_bootstrap_mode_to_false(tmp_path, monkeypatch) 
         ("proj_001", 0),
         ("proj_002", 1),
     ]
+
+
+def test_runs_gets_transcript_path_column(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "old_runs.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE runs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                worker TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                log_path TEXT,
+                worklog_path TEXT
+            )
+            """
+        )
+
+    monkeypatch.setattr(db, "_db_path", None)
+    db.configure(path)
+
+    with db.get_conn() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+    assert "transcript_path" in columns

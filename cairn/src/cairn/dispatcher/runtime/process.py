@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import json
 import logging
 import threading
 import time
@@ -41,14 +43,114 @@ class ExecProcess(Protocol):
     def cancel(self, reason: str) -> None: ...
 
 
-class ManagedProcess:
+class TranscriptCaptureMixin:
+    """Reassembles stdout into lines, feeds a parser, appends stamped events to a JSONL file.
+
+    Every failure (parser or file IO) is logged and swallowed; it must never affect the run.
+    Only the single stdout reader thread calls ``_feed_transcript``.
+    """
+
+    _transcript_path: str | None = None
+    _transcript_parser: Any = None
+    _transcript_file: Any = None
+    _transcript_buf: str = ""
+    _transcript_seq: int = 0
+
+    def _init_transcript(self, transcript_path: str | None, transcript_parser: Any) -> None:
+        self._transcript_path = transcript_path
+        self._transcript_parser = transcript_parser
+        self._transcript_file = None
+        self._transcript_buf = ""
+        self._transcript_seq = 0
+        self._transcript_lock = threading.RLock()
+
+    def _open_transcript(self) -> None:
+        if not (self._transcript_path and self._transcript_parser is not None):
+            return
+        try:
+            self._transcript_file = open(self._transcript_path, "a", encoding="utf-8", errors="replace")
+        except OSError as exc:
+            LOG.warning("failed to open transcript path=%s error=%s", self._transcript_path, exc)
+
+    def _feed_transcript(self, text: str) -> None:
+        if not text or self._transcript_file is None or self._transcript_parser is None:
+            return
+        try:
+            self._transcript_buf += text
+            *lines, self._transcript_buf = self._transcript_buf.split("\n")
+            for line in lines:
+                self._parse_transcript_line(line)
+        except Exception as exc:  # noqa: BLE001 - must never propagate into the run
+            LOG.warning("transcript capture failed path=%s error=%s", self._transcript_path, exc)
+
+    def _parse_transcript_line(self, line: str) -> None:
+        try:
+            events = self._transcript_parser.feed(line)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("transcript parser feed failed path=%s error=%s", self._transcript_path, exc)
+            return
+        self._write_transcript_events(events)
+
+    def _write_transcript_events(self, events: Any) -> None:
+        try:
+            iterator = iter(events or [])
+            while True:
+                try:
+                    event = next(iterator)
+                except StopIteration:
+                    return
+                try:
+                    record = {
+                        "seq": self._transcript_seq,
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        **event.to_dict(),
+                    }
+                    payload = json.dumps(record) + "\n"
+                    with self._transcript_lock:
+                        if self._transcript_file is None:
+                            return
+                        self._transcript_file.write(payload)
+                        self._transcript_file.flush()
+                    self._transcript_seq += 1
+                except Exception as exc:  # noqa: BLE001
+                    LOG.warning("failed to write transcript path=%s error=%s", self._transcript_path, exc)
+        except Exception as exc:  # noqa: BLE001 - bad/lazy/non-iterable parser output
+            LOG.warning("transcript events unusable path=%s error=%s", self._transcript_path, exc)
+
+    def _close_transcript(self) -> None:
+        """Flush trailing state and close the file. Never raises."""
+        try:
+            if self._transcript_file is None:
+                return
+            try:
+                trailing, self._transcript_buf = self._transcript_buf, ""
+                if trailing.strip():
+                    self._parse_transcript_line(trailing)
+                self._write_transcript_events(self._transcript_parser.finish())
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("transcript finish failed path=%s error=%s", self._transcript_path, exc)
+            finally:
+                with self._transcript_lock:
+                    try:
+                        self._transcript_file.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._transcript_file = None
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("transcript close failed path=%s error=%s", self._transcript_path, exc)
+
+
+class ManagedProcess(TranscriptCaptureMixin):
     def __init__(
         self,
         container: Container,
         command: list[str],
         env: dict[str, str],
         log_path: str | None = None,
+        transcript_path: str | None = None,
+        transcript_parser: Any = None,
     ):
+        self._init_transcript(transcript_path, transcript_parser)
         self.command = command
         self.env = env
         self._container = container
@@ -72,6 +174,7 @@ class ManagedProcess:
                 self._log_file = open(self._log_path, "a", encoding="utf-8", errors="replace")
             except OSError as exc:
                 LOG.warning("failed to open task log path=%s error=%s", self._log_path, exc)
+        self._open_transcript()
         exec_info = self._api.exec_create(
             self._container.id,
             self.command,
@@ -145,6 +248,7 @@ class ManagedProcess:
                 if stdout:
                     self._stdout.append(stdout)
                     self._append_log(stdout)
+                    self._feed_transcript(stdout)
                 if stderr:
                     self._stderr.append(stderr)
                     self._append_log(stderr)
@@ -154,6 +258,8 @@ class ManagedProcess:
             self._close_stream(stream)
             self._returncode = self._resolve_exit_code()
             self._close_log()
+            with suppress(Exception):
+                self._close_transcript()
             self._done.set()
 
     def _append_log(self, text: str) -> None:

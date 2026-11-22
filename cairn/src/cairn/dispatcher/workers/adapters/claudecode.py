@@ -3,6 +3,7 @@ from __future__ import annotations
 from cairn.dispatcher.config import WorkerConfig
 from cairn.dispatcher.workers.base import DriverResult, SeedSessionDriver
 from cairn.dispatcher.workers.health import HealthResult, http_ping, proxies_from_env
+from cairn.dispatcher.workers.transcript import ClaudeTranscriptParser, TranscriptParser, parse_json_lines
 
 
 ANTHROPIC_VERSION = "2023-06-01"
@@ -48,6 +49,9 @@ class ClaudeCodeDriver(SeedSessionDriver):
                 session,
                 "--dangerously-skip-permissions",
                 "-p",
+                "--output-format",
+                "stream-json",
+                "--verbose",
                 "--",
                 prompt,
             ],
@@ -61,6 +65,33 @@ class ClaudeCodeDriver(SeedSessionDriver):
             session,
             "--dangerously-skip-permissions",
             "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
             "--",
             prompt,
         ]
+
+    def new_transcript_parser(self) -> TranscriptParser:
+        return ClaudeTranscriptParser()
+
+    def extract_response_text(self, stdout: str, stderr: str) -> str:
+        events = parse_json_lines(stdout)
+        for obj in reversed(events):
+            if obj.get("type") == "result" and isinstance(obj.get("result"), str) and obj["result"]:
+                return obj["result"]
+        texts: list[str] = []
+        for obj in events:
+            message = obj.get("message")
+            if obj.get("type") != "assistant" or not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if isinstance(content, list):
+                texts.extend(
+                    b["text"]
+                    for b in content
+                    if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+                )
+        if texts:
+            return "".join(texts)
+        return stdout

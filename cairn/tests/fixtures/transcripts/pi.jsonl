@@ -1,0 +1,10 @@
+{"type":"session","version":3,"id":"sess-fixture-0001","cwd":"/work"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"run echo"}]}}
+{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"run echo"}]}}
+{"type":"tool_execution_start","toolCallId":"call-1","toolName":"bash","args":{"command":"echo hello-fixture"}}
+{"type":"tool_execution_end","toolCallId":"call-1","toolName":"bash","result":{"content":[{"type":"text","text":"hello-fixture\n"}]},"isError":false}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input":10,"output":3,"totalTokens":13},"stopReason":"stop"}}
+{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"hi"}]}]}
+{"type":"agent_settled","aborted":false}

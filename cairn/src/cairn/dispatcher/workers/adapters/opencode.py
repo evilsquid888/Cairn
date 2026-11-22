@@ -5,6 +5,11 @@ import uuid
 from cairn.dispatcher.config import WorkerConfig
 from cairn.dispatcher.workers.base import DriverResult, SeedSessionDriver
 from cairn.dispatcher.workers.health import HealthResult
+from cairn.dispatcher.workers.transcript import (
+    OpenCodeTranscriptParser,
+    TranscriptParser,
+    parse_json_lines,
+)
 
 
 class OpenCodeDriver(SeedSessionDriver):
@@ -33,6 +38,26 @@ class OpenCodeDriver(SeedSessionDriver):
     def describe_health(self, worker: WorkerConfig) -> str:
         return "OpenCode host auth (health check skipped)"
 
+    def new_transcript_parser(self) -> TranscriptParser | None:
+        return OpenCodeTranscriptParser()
+
+    def extract_response_text(self, stdout: str, stderr: str) -> str:
+        # Concatenate every text part of the final step (after the last step_start);
+        # with no step_start, every text part.
+        texts: list[str] = []
+        for obj in parse_json_lines(stdout):
+            if obj.get("type") == "step_start":
+                texts = []
+                continue
+            part = obj.get("part")
+            if (
+                obj.get("type") == "text"
+                and isinstance(part, dict)
+                and isinstance(part.get("text"), str)
+            ):
+                texts.append(part["text"])
+        return "\n".join(texts) if texts else stdout
+
     def build_execute(self, worker: WorkerConfig, prompt: str, session: str | None) -> DriverResult:
         return DriverResult(argv=self._argv(worker, prompt, session), session=session)
 
@@ -50,7 +75,7 @@ class OpenCodeDriver(SeedSessionDriver):
             "--standalone",
             "--auto",
             "--format",
-            "default",
+            "json",
         ]
         if model:
             opencode_argv.extend(["--model", model])

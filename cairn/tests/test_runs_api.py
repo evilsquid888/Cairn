@@ -112,3 +112,122 @@ def test_worklog_and_artifact_listing(client: TestClient, tmp_path: Path) -> Non
 
     traversal = client.get(f"/projects/{project_id}/artifacts/../../etc/passwd")
     assert traversal.status_code == 404
+
+
+def test_create_and_get_run_round_trips_transcript_path(client: TestClient) -> None:
+    project_id = _create_project(client)
+    response = client.post(
+        f"/projects/{project_id}/runs",
+        json={
+            "id": "run_tp",
+            "task_type": "explore_execute",
+            "worker": "tester",
+            "started_at": "2026-10-24T16:00:00Z",
+            "transcript_path": "/tmp/a.jsonl",
+        },
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["transcript_path"] == "/tmp/a.jsonl"
+    assert client.get("/runs/run_tp").json()["transcript_path"] == "/tmp/a.jsonl"
+
+    patched = client.patch("/runs/run_tp", json={"transcript_path": "/tmp/b.jsonl"})
+    assert patched.status_code == 200, patched.text
+    assert client.get("/runs/run_tp").json()["transcript_path"] == "/tmp/b.jsonl"
+
+
+def _create_run_with_transcript(client: TestClient, transcript_path: str | None) -> None:
+    project_id = _create_project(client)
+    response = client.post(
+        f"/projects/{project_id}/runs",
+        json={
+            "id": "run_tr",
+            "task_type": "explore_execute",
+            "worker": "tester",
+            "intent_id": "i001",
+            "status": "running",
+            "started_at": "2026-10-24T16:00:00Z",
+            "transcript_path": transcript_path,
+        },
+    )
+    assert response.status_code == 201, response.text
+
+
+def _write_transcript(tmp_path: Path, lines: list[str]) -> Path:
+    path = tmp_path / "logs" / "p" / "run_tr-transcript.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_get_transcript_returns_events(client: TestClient, tmp_path: Path) -> None:
+    path = _write_transcript(
+        tmp_path,
+        [
+            '{"kind": "text", "text": "a", "seq": 99}',
+            '{"kind": "tool", "tool": "bash", "text": "b"}',
+            '{"kind": "text", "text": "c"}',
+        ],
+    )
+    _create_run_with_transcript(client, str(path))
+    response = client.get("/runs/run_tr/transcript")
+    assert response.status_code == 200
+    body = response.json()
+    assert [e["seq"] for e in body] == [0, 1, 2]
+    assert [e["text"] for e in body] == ["a", "b", "c"]
+    assert body[1]["tool"] == "bash"
+
+
+def test_get_transcript_after_seq_pages(client: TestClient, tmp_path: Path) -> None:
+    path = _write_transcript(tmp_path, ['{"text": "a"}', '{"text": "b"}', '{"text": "c"}'])
+    _create_run_with_transcript(client, str(path))
+    body = client.get("/runs/run_tr/transcript", params={"after_seq": 0}).json()
+    assert [e["seq"] for e in body] == [1, 2]
+    assert client.get("/runs/run_tr/transcript", params={"after_seq": 2}).json() == []
+    limited = client.get("/runs/run_tr/transcript", params={"after_seq": 0, "limit": 1}).json()
+    assert [e["seq"] for e in limited] == [1]
+
+
+def test_get_transcript_missing_file_returns_empty(client: TestClient, tmp_path: Path) -> None:
+    _create_run_with_transcript(client, None)
+    response = client.get("/runs/run_tr/transcript")
+    assert response.status_code == 200
+    assert response.json() == []
+    client.patch(
+        "/runs/run_tr",
+        json={"transcript_path": str(tmp_path / "logs" / "nope-transcript.jsonl")},
+    )
+    response = client.get("/runs/run_tr/transcript")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_get_transcript_rejects_path_outside_log_dir(client: TestClient) -> None:
+    _create_run_with_transcript(client, "/etc/passwd")
+    assert client.get("/runs/run_tr/transcript").status_code == 403
+
+
+def test_get_transcript_skips_nonfinite_and_deeply_nested_lines(
+    client: TestClient, tmp_path: Path
+) -> None:
+    path = _write_transcript(
+        tmp_path,
+        [
+            '{"text": "a"}',
+            '{"x": NaN}',
+            '{"x": Infinity}',
+            '{"x": -Infinity}',
+            "[" * 2000 + "]" * 2000,
+            '{"text": "f"}',
+        ],
+    )
+    _create_run_with_transcript(client, str(path))
+    response = client.get("/runs/run_tr/transcript")
+    assert response.status_code == 200
+    assert [(e["seq"], e["text"]) for e in response.json()] == [(0, "a"), (5, "f")]
+
+
+def test_get_transcript_skips_malformed_lines(client: TestClient, tmp_path: Path) -> None:
+    path = _write_transcript(tmp_path, ['{"text": "a"}', "not json", "[1]", '{"text": "c"}'])
+    _create_run_with_transcript(client, str(path))
+    body = client.get("/runs/run_tr/transcript").json()
+    assert [(e["seq"], e["text"]) for e in body] == [(0, "a"), (3, "c")]

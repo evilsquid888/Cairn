@@ -130,6 +130,7 @@ def run_reason_task(
             client=client,
             project_id=project.project.id,
             intent_id=None,
+            driver=driver,
         )
         execute_ms = int((time.perf_counter() - execute_started) * 1000)
         total_ms = int((time.perf_counter() - task_started) * 1000)

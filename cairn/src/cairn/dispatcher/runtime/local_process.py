@@ -7,7 +7,8 @@ import subprocess
 import threading
 from contextlib import suppress
 
-from cairn.dispatcher.runtime.process import ProcessResult
+from cairn.dispatcher.runtime.process import ProcessResult, TranscriptCaptureMixin
+from cairn.dispatcher.workers.transcript import TranscriptParser
 
 LOG = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ STREAM_JOIN_TIMEOUT_SECONDS = 5.0
 FORCE_KILL_REAP_TIMEOUT_SECONDS = 2.0
 
 
-class LocalProcess:
+class LocalProcess(TranscriptCaptureMixin):
     """Runs a worker command as a host subprocess.
 
     Mirrors the container ManagedProcess surface (start/communicate/kill/cancel) but
@@ -33,7 +34,10 @@ class LocalProcess:
         timeout_seconds: int | None = None,
         term_grace_seconds: int = 5,
         log_path: str | None = None,
+        transcript_path: str | None = None,
+        transcript_parser: TranscriptParser | None = None,
     ):
+        self._init_transcript(transcript_path, transcript_parser)
         self.command = command
         self.env = env
         self._cwd = cwd
@@ -57,7 +61,8 @@ class LocalProcess:
                 self._log_file = open(self._log_path, "a", encoding="utf-8", errors="replace")
             except OSError as exc:
                 LOG.warning("failed to open task log path=%s error=%s", self._log_path, exc)
-        self._process = subprocess.Popen(
+        self._open_transcript()
+        self._process =subprocess.Popen(
             self.command,
             cwd=self._cwd,
             env=self.env,
@@ -69,7 +74,7 @@ class LocalProcess:
             start_new_session=True,
         )
         self._stdout_thread = threading.Thread(
-            target=self._drain, args=(self._process.stdout, self._stdout_chunks), daemon=True
+            target=self._drain, args=(self._process.stdout, self._stdout_chunks, True), daemon=True
         )
         self._stderr_thread = threading.Thread(
             target=self._drain, args=(self._process.stderr, self._stderr_chunks), daemon=True
@@ -133,16 +138,22 @@ class LocalProcess:
             with suppress(ProcessLookupError, PermissionError, ValueError):
                 process.send_signal(sig)
 
-    def _drain(self, pipe, sink: list[str]) -> None:
+    def _drain(self, pipe, sink: list[str], is_stdout: bool = False) -> None:
         try:
             for chunk in iter(lambda: pipe.read(READ_CHUNK_SIZE), ""):
                 sink.append(chunk)
                 self._append_log(chunk)
+                if is_stdout:
+                    self._feed_transcript(chunk)
         except (ValueError, OSError):
             pass
         finally:
             with suppress(Exception):
                 pipe.close()
+            if is_stdout:
+                # Same thread as the writer, so no race with _feed_transcript.
+                with suppress(Exception):
+                    self._close_transcript()
 
     def _append_log(self, text: str) -> None:
         if not text or self._log_file is None:

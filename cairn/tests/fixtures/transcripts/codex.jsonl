@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"thread_fixture"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"Plan: run echo."}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"echo hello-fixture","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"echo hello-fixture","aggregated_output":"hello-fixture\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"hi"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}

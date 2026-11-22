@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 from cairn.dispatcher.config import LocalConfig
 from cairn.dispatcher.runtime.local_process import LocalProcess
@@ -46,6 +47,8 @@ class LocalBackend:
         timeout_seconds: int | None = None,
         kill_after_seconds: int = 5,
         log_path: str | None = None,
+        transcript_path: str | None = None,
+        transcript_parser: Any = None,
     ) -> LocalProcess:
         merged_env = {**os.environ, **(env or {})}
         return LocalProcess(
@@ -55,6 +58,8 @@ class LocalBackend:
             timeout_seconds=timeout_seconds,
             term_grace_seconds=kill_after_seconds,
             log_path=log_path,
+            transcript_path=transcript_path,
+            transcript_parser=transcript_parser,
         )
 
     def read_text_file(self, container_name: str, path: str) -> str | None:

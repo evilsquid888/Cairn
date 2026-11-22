@@ -7,6 +7,7 @@ from typing import Any
 from cairn.dispatcher.config import WorkerConfig
 from cairn.dispatcher.workers.base import DriverResult, WorkerDriver
 from cairn.dispatcher.workers.health import HealthResult, http_ping, proxies_from_env
+from cairn.dispatcher.workers.transcript import PiTranscriptParser, TranscriptParser
 
 
 class PiDriver(WorkerDriver):
@@ -17,6 +18,9 @@ class PiDriver(WorkerDriver):
 
     def local_binary(self) -> str | None:
         return "pi"
+
+    def new_transcript_parser(self) -> TranscriptParser | None:
+        return PiTranscriptParser()
 
     def check_health(self, worker: WorkerConfig, *, timeout: float) -> HealthResult:
         if worker.env.get("CAIRN_HOST_AUTH"):

@@ -116,6 +116,7 @@ def run_explore_task(
             client=client,
             project_id=project.project.id,
             intent_id=intent.id,
+            driver=driver,
         )
         execute_ms = int((time.perf_counter() - execute_started) * 1000)
         session = driver.extract_session(session, first.stdout, first.stderr)
@@ -320,6 +321,7 @@ def _try_conclude_fallback(
         client=client,
         project_id=project_id,
         intent_id=intent.id,
+        driver=driver,
     )
     conclude_ms = int((time.perf_counter() - conclude_started) * 1000)
     cancelled = cancel_reason(result, cancellation)
@@ -403,6 +405,7 @@ def _run_process(
     client: CairnClient,
     project_id: str,
     intent_id: str,
+    driver=None,
 ):
     return run_worker_process(
         container_manager,
@@ -416,4 +419,5 @@ def _run_process(
         client=client,
         project_id=project_id,
         intent_id=intent_id,
+        driver=driver,
     )

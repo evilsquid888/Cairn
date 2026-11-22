@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS runs (
     finished_at TEXT,
     log_path TEXT,
     worklog_path TEXT,
+    transcript_path TEXT,
     error TEXT
 );
 
@@ -108,6 +109,7 @@ def configure(path: Path) -> None:
     with get_conn() as conn:
         conn.executescript(SCHEMA)
         _ensure_project_columns(conn)
+        _ensure_run_columns(conn)
 
 
 def _ensure_project_columns(conn: sqlite3.Connection) -> None:
@@ -118,6 +120,12 @@ def _ensure_project_columns(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "UPDATE projects SET bootstrap_enabled = CASE WHEN bootstrap_mode = 'disabled' THEN 0 ELSE 1 END"
             )
+
+
+def _ensure_run_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+    if "transcript_path" not in columns:
+        conn.execute("ALTER TABLE runs ADD COLUMN transcript_path TEXT")
 
 
 @contextmanager
