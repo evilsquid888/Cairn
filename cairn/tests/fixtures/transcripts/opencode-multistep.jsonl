@@ -1,0 +1,10 @@
+{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","sessionID":"ses_fixture"}}
+{"type":"text","sessionID":"ses_fixture","part":{"type":"text","text":"Starting enumeration."}}
+{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","sessionID":"ses_fixture"}}
+{"type":"tool_use","sessionID":"ses_fixture","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo one"},"output":"one"}}}
+{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","reason":"tool-calls","tokens":{"input":5,"output":2},"cost":0.001}}
+{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","sessionID":"ses_fixture"}}
+{"type":"tool_use","sessionID":"ses_fixture","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo two"},"output":"two"}}}
+{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","reason":"tool-calls","tokens":{"input":6,"output":3},"cost":0.001}}
+{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","sessionID":"ses_fixture"}}
+{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","sessionID":"ses_fixture"}}

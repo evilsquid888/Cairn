@@ -272,6 +272,11 @@ class CodexTranscriptParser(TranscriptParser):
 class OpenCodeTranscriptParser(TranscriptParser):
     """Normalizes `opencode run --format json` NDJSON events (one JSON object per line)."""
 
+    def __init__(self) -> None:
+        # A run emits one step_start per step (dozens); they are near-identical
+        # (same session id), so keep only the first and drop the rest.
+        self._step_started = False
+
     def feed(self, line: str) -> list[TranscriptEvent]:
         stripped = line.strip()
         if not stripped:
@@ -295,10 +300,20 @@ class OpenCodeTranscriptParser(TranscriptParser):
         if not isinstance(part, dict):
             return None
         if kind == "step_start":
+            if self._step_started:
+                return []
+            self._step_started = True
             meta = {"session_id": obj["sessionID"]} if obj.get("sessionID") is not None else {}
             return [TranscriptEvent(kind="system", title="step", meta=meta)]
         if kind == "text":
             return [TranscriptEvent(kind="assistant_text", text=truncate(str(part.get("text", "")))[0])]
+        if kind == "reasoning" or part.get("type") == "reasoning":
+            # Reasoning-capable models (e.g. deepseek-r1) emit reasoning parts
+            # with the text in the clear (unlike Claude's redacted headless
+            # output). OpenCode emits one complete part per block — confirmed by
+            # text arriving as a single event on a 97-tool run — so, like text,
+            # map one reasoning part to one thinking event (no delta coalescing).
+            return [TranscriptEvent(kind="thinking", text=truncate(str(part.get("text", "")))[0])]
         if kind == "step_finish":
             return [
                 TranscriptEvent(

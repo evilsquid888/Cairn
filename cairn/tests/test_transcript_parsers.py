@@ -275,13 +275,51 @@ def test_opencode_parser_maps_events():
     for line in _OC_FIXTURE.read_text().splitlines():
         events += p.feed(line)
     events += p.finish()
+    # repeated step_start collapses to a single leading system row
     assert [e.kind for e in events] == [
-        "system", "tool_call", "tool_result", "usage", "system", "assistant_text", "usage",
+        "system", "tool_call", "tool_result", "usage", "assistant_text", "usage",
     ]
     assert events[1].tool == "shell" and events[1].text == "echo hello-fixture"
     assert events[2].text == "hello-fixture\n" and events[2].meta["exit"] == 0
-    assert events[5].text == "hi"
-    assert events[6].meta["tokens"]["output"] == 3
+    assert events[4].text == "hi"
+    assert events[5].meta["tokens"]["output"] == 3
+
+
+_OC_REASONING_FIXTURE = _Path(__file__).parent / "fixtures" / "transcripts" / "opencode-reasoning.jsonl"
+_OC_MULTISTEP_FIXTURE = _Path(__file__).parent / "fixtures" / "transcripts" / "opencode-multistep.jsonl"
+
+
+def test_opencode_parser_captures_reasoning():
+    p = OpenCodeTranscriptParser()
+    events = []
+    for line in _OC_REASONING_FIXTURE.read_text().splitlines():
+        events += p.feed(line)
+    events += p.finish()
+    assert [e.kind for e in events] == [
+        "system", "thinking", "assistant_text", "tool_call", "tool_result", "usage",
+    ]
+    thinking = [e for e in events if e.kind == "thinking"]
+    assert len(thinking) == 1
+    assert thinking[0].text == "The goal is to capture the flag; enumerate services first."
+    assert not any(e.kind == "raw" for e in events)
+
+
+def test_opencode_parser_collapses_repeated_step_start():
+    import collections
+    p = OpenCodeTranscriptParser()
+    events = []
+    for line in _OC_MULTISTEP_FIXTURE.read_text().splitlines():
+        events += p.feed(line)
+    events += p.finish()
+    counts = collections.Counter(e.kind for e in events)
+    assert counts["system"] == 1  # 5 step_start events collapse to one
+    assert counts["assistant_text"] == 1
+    assert counts["tool_call"] == 2
+    assert counts["tool_result"] == 2
+    assert counts["usage"] == 2
+    assert counts["raw"] == 0
+    first_system = next(e for e in events if e.kind == "system")
+    assert first_system.meta.get("session_id") == "ses_fixture"
 
 
 def test_opencode_parser_never_raises_on_garbage():

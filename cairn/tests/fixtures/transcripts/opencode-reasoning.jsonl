@@ -1,0 +1,5 @@
+{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","sessionID":"ses_fixture"}}
+{"type":"reasoning","sessionID":"ses_fixture","part":{"type":"reasoning","text":"The goal is to capture the flag; enumerate services first."}}
+{"type":"text","sessionID":"ses_fixture","part":{"type":"text","text":"I'll scan the host."}}
+{"type":"tool_use","sessionID":"ses_fixture","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"nmap -p- target"},"output":"80/tcp open http"}}}
+{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","reason":"tool-calls","tokens":{"input":10,"output":5},"cost":0.001}}
