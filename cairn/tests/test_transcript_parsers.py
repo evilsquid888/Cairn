@@ -68,7 +68,6 @@ def test_claude_parser_maps_tool_use_and_result():
         "tool_call",
         "tool_result",
         "assistant_text",
-        "raw",
         "result",
     ]
     assert events[0].title == "init"
@@ -129,7 +128,64 @@ def test_claude_execute_and_conclude_argv_use_stream_json():
         assert "--output-format" in argv
         assert argv[argv.index("--output-format") + 1] == "stream-json"
         assert "--verbose" in argv
+        assert "--include-partial-messages" in argv
         assert argv[-2:] == ["--", "p"]
+
+
+_CLAUDE_THINKING_FIXTURE = _Path(__file__).parent / "fixtures" / "transcripts" / "claudecode-thinking.jsonl"
+
+
+def test_claude_parser_captures_thinking_deltas():
+    p = ClaudeTranscriptParser()
+    events = []
+    for line in _CLAUDE_THINKING_FIXTURE.read_text().splitlines():
+        events += p.feed(line)
+    events += p.finish()
+    assert [e.kind for e in events] == [
+        "system",
+        "thinking",
+        "assistant_text",
+        "tool_call",
+        "tool_result",
+        "result",
+    ]
+    thinking = [e for e in events if e.kind == "thinking"]
+    assert len(thinking) == 1
+    assert thinking[0].text == "Let me check the port."
+    # no empty thinking events leaked from the redacted assembled block
+    assert all(e.text for e in thinking)
+    assert [e for e in events if e.kind == "assistant_text"][0].text == "Scanning now."
+    assert [e for e in events if e.kind == "tool_call"][0].tool == "Bash"
+    # rate_limit_event / tool_progress no longer produce raw
+    assert not any(e.kind == "raw" for e in events)
+
+
+def test_claude_parser_skips_empty_thinking_block():
+    p = ClaudeTranscriptParser()
+    redacted = _json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "thinking", "thinking": "", "signature": "x"}]}})
+    assert p.feed(redacted) == []
+    nonempty = _json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "thinking", "thinking": "hmm"}]}})
+    assert [e.kind for e in p.feed(nonempty)] == ["thinking"]
+
+
+def test_claude_parser_quiets_rate_limit_and_tool_progress():
+    p = ClaudeTranscriptParser()
+    assert p.feed(_json.dumps({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed"}})) == []
+    assert p.feed(_json.dumps({"type": "tool_progress", "toolUseID": "t"})) == []
+
+
+def test_claude_parser_flushes_unterminated_thinking_on_finish():
+    # a run killed mid-thinking (no content_block_stop) still yields the buffered text
+    p = ClaudeTranscriptParser()
+    assert p.feed(_json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}})) == []
+    assert p.feed(_json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "partial"}}})) == []
+    flushed = p.finish()
+    assert [e.kind for e in flushed] == ["thinking"]
+    assert flushed[0].text == "partial"
 
 
 def test_claude_driver_provides_parser():

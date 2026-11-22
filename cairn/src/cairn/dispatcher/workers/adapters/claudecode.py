@@ -52,6 +52,7 @@ class ClaudeCodeDriver(SeedSessionDriver):
                 "--output-format",
                 "stream-json",
                 "--verbose",
+                "--include-partial-messages",
                 "--",
                 prompt,
             ],
@@ -68,6 +69,7 @@ class ClaudeCodeDriver(SeedSessionDriver):
             "--output-format",
             "stream-json",
             "--verbose",
+            "--include-partial-messages",
             "--",
             prompt,
         ]

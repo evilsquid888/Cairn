@@ -94,6 +94,14 @@ def _block_text(content: Any) -> str:
 class ClaudeTranscriptParser(TranscriptParser):
     """Normalizes Claude Code `--output-format stream-json` lines."""
 
+    # Noisy event types that should not clutter the transcript.
+    _QUIET = frozenset({"rate_limit_event", "tool_progress"})
+
+    def __init__(self) -> None:
+        # Buffers thinking_delta text per content-block index until the block
+        # stops (the finalized thinking block is redacted in headless mode).
+        self._thinking: dict[int, str] = {}
+
     def feed(self, line: str) -> list[TranscriptEvent]:
         stripped = line.strip()
         if not stripped:
@@ -107,8 +115,45 @@ class ClaudeTranscriptParser(TranscriptParser):
             return [TranscriptEvent(kind="raw", text=truncate(stripped)[0])]
         return events
 
+    def finish(self) -> list[TranscriptEvent]:
+        # Flush any thinking still buffered (e.g. a run killed mid-block).
+        out = [
+            TranscriptEvent(kind="thinking", text=truncate(buf)[0])
+            for buf in self._thinking.values()
+            if buf
+        ]
+        self._thinking.clear()
+        return out
+
+    def _handle_stream_event(self, obj: dict[str, Any]) -> list[TranscriptEvent]:
+        event = obj.get("event")
+        if not isinstance(event, dict):
+            return []
+        etype = event.get("type")
+        index = event.get("index", 0)
+        if etype == "content_block_start":
+            block = event.get("content_block")
+            if isinstance(block, dict) and block.get("type") == "thinking":
+                self._thinking.setdefault(index, "")
+            return []
+        if etype == "content_block_delta":
+            delta = event.get("delta")
+            if isinstance(delta, dict) and delta.get("type") == "thinking_delta":
+                self._thinking[index] = self._thinking.get(index, "") + str(delta.get("thinking", ""))
+            return []
+        if etype == "content_block_stop":
+            buf = self._thinking.pop(index, None)
+            if buf:
+                return [TranscriptEvent(kind="thinking", text=truncate(buf)[0])]
+            return []
+        return []
+
     def _map(self, obj: dict[str, Any]) -> list[TranscriptEvent] | None:
         kind = obj.get("type")
+        if kind in self._QUIET:
+            return []
+        if kind == "stream_event":
+            return self._handle_stream_event(obj)
         if kind == "system":
             meta: dict[str, Any] = {}
             if obj.get("model") is not None:
@@ -131,7 +176,12 @@ class ClaudeTranscriptParser(TranscriptParser):
                 if kind == "assistant" and btype == "text":
                     out.append(TranscriptEvent(kind="assistant_text", text=truncate(str(block.get("text", "")))[0]))
                 elif kind == "assistant" and btype == "thinking":
-                    out.append(TranscriptEvent(kind="thinking", text=truncate(str(block.get("thinking", "")))[0]))
+                    # Headless finalized thinking blocks are redacted (empty +
+                    # signature); the real text comes from thinking_delta. Skip
+                    # empties so they don't duplicate the buffered delta event.
+                    thinking_text = str(block.get("thinking", ""))
+                    if thinking_text:
+                        out.append(TranscriptEvent(kind="thinking", text=truncate(thinking_text)[0]))
                 elif kind == "assistant" and btype == "tool_use":
                     text, cut = truncate(json.dumps(block.get("input", {})))
                     out.append(
